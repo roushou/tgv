@@ -59,6 +59,7 @@ ren-recorder = { path = "crates/ren-recorder", version = "0.1.0" }
 ren-store = { path = "crates/ren-store", version = "0.1.0" }
 ren-supervisor = { path = "crates/ren-supervisor", version = "0.1.0" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "http2"] }
+semver = { version = "1.0.28", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order", "raw_value"] }
 serde_with = { version = "3.24", default-features = false, features = ["macros"] }

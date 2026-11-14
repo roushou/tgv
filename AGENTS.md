@@ -368,6 +368,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
     `Controls` (token or Tailscale identity; browsers refused), and its
     `[control]` configuration (`ControlOptions`) and `ControlToken`. Handler state
     stays crate-private; configuration and token types are exported at the root.
+    Its `tools` module serves `/control/v1/tools` (listing, change, and
+    collection) through the `Toolbox` port the gateway declares in `tools`
+    (with its views), which the daemon's `HostToolbox` implements.
     Its `sessions` module serves `/control/v1/sessions`: creating a session,
     prompting, unqueueing, answering approvals, configuring, choosing its
     client while a draft, interrupting, stopping, archiving, unarchiving,
@@ -392,8 +395,10 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `InstallJob`s (downloading through its `Fetch` seam, `ReqwestFetch` in
   production, https only and capped in bytes; unpacking tar.gz, zip, and
   bare releases, refusing entries that reach outside their folder), and
-  activates, restores, and collects toolset generations with renames of
-  finished folders and links. Nothing calls it yet.
+  applies an `Edit` under its lock file (`ToolStore::change`), activating,
+  restoring, and collecting toolset generations with renames of finished
+  folders and links. `HostToolbox` is the gateway's `Toolbox` over it,
+  which `ren tools` uses too.
   Its integration tests hold `TestGateway` (`tests/support`) and the gateway,
   WebSocket, decision, and full-daemon tests; they use the gateway's complete
   router with test capabilities.

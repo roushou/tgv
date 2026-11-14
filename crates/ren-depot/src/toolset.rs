@@ -8,7 +8,6 @@ use crate::{
     package::{PackageId, ProgramName},
     source::{Artifact, Platform, RelativePath, Sha256, Source},
 };
-use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -64,8 +63,9 @@ impl Install {
 
 /// A toolset's number. Each change makes the next one; numbers never repeat.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, SerializeDisplay, DeserializeFromStr,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
+#[serde(transparent)]
 pub struct Generation(u64);
 
 impl Generation {

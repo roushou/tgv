@@ -15,6 +15,9 @@
 
 mod archive;
 pub mod fetch;
+mod toolbox;
+
+pub use toolbox::HostToolbox;
 
 use archive::Download;
 use fetch::{ByteLimit, Fetch};
@@ -191,6 +194,18 @@ impl<F> ToolStore<F> {
             }
         }
         Err(ToolStoreError::Busy)
+    }
+
+    /// Every generation kept, newest first. One that cannot be read is
+    /// left out.
+    pub fn generations(&self) -> Result<Vec<Toolset>, ToolStoreError> {
+        let mut generations: Vec<Toolset> = Self::entries(&self.root.join("generations"))?
+            .into_iter()
+            .filter_map(|(name, _)| name.parse::<Generation>().ok())
+            .filter_map(|generation| self.generation(generation).ok())
+            .collect();
+        generations.sort_by_key(|toolset| std::cmp::Reverse(toolset.generation()));
+        Ok(generations)
     }
 
     /// Make `plan`'s toolset the current generation. Every install it adds

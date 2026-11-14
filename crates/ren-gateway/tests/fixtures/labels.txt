@@ -7,3 +7,6 @@ api::preview::TextEnd: intact split_character
 api::preview::DecodeIntegrity: not_decoded verified prefix failed
 upstream::EntryIngress: fallback_only direct
 instance::Environment: production development
+tools::GenerationState: current in_use idle
+tools::ChangeOutcome: unchanged activated failed
+tools::ChangeKind: add replace remove

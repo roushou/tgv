@@ -13,6 +13,7 @@ description = "Configuration, resource wiring, and lifecycle of the Ren LLM gate
 # ren-gateway (docs/architecture.md).
 [dependencies]
 flate2.workspace = true
+futures-util.workspace = true
 ignore = "0.4.25"
 ren-depot.workspace = true
 ren-gateway.workspace = true
@@ -37,7 +38,6 @@ zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2
 axum.workspace = true
 brotli.workspace = true
 bytes.workspace = true
-futures-util.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true

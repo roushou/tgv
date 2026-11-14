@@ -210,6 +210,26 @@ impl TestGateway {
             dir,
             upstream,
             None::<(Vec<PathBuf>, agent::ScriptedHost)>,
+            None,
+        )
+        .await
+    }
+
+    /// Forward over HTTP, with `tools` behind `/control/v1/tools`.
+    pub async fn with_tools(
+        config: &Config,
+        dir: &Path,
+        tools: Arc<dyn ren_gateway::tools::Toolbox>,
+    ) -> Self {
+        let runtime = Self::resolve(config);
+        let upstream =
+            ReqwestUpstream::new(runtime.upstreams().clone(), runtime.transport()).unwrap();
+        Self::assemble(
+            config,
+            dir,
+            upstream,
+            None::<(Vec<PathBuf>, agent::ScriptedHost)>,
+            Some(tools),
         )
         .await
     }
@@ -224,7 +244,7 @@ impl TestGateway {
         let runtime = Self::resolve(config);
         let upstream =
             ReqwestUpstream::new(runtime.upstreams().clone(), runtime.transport()).unwrap();
-        Self::assemble(config, dir, upstream, Some((roots, host))).await
+        Self::assemble(config, dir, upstream, Some((roots, host)), None).await
     }
 
     async fn assemble<U: Upstream, H: AgentHost>(
@@ -232,6 +252,7 @@ impl TestGateway {
         dir: &Path,
         upstream: U,
         runs: Option<(Vec<PathBuf>, H)>,
+        tools: Option<Arc<dyn ren_gateway::tools::Toolbox>>,
     ) -> Self {
         let runtime = Self::resolve(config);
         let clock = Arc::new(ManualClock::at(UnixMillis::from_millis(1_800_000_000_000)));
@@ -306,6 +327,7 @@ impl TestGateway {
             build: build(),
             instance: runtime.instance(),
             runs: supervisor,
+            tools,
         });
         let ingress = Ingress::new(listener, router.clone());
         let server = tokio::spawn(ingress.serve(shutdown.clone(), Self::DRAIN_DEADLINE));

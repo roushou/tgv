@@ -79,10 +79,11 @@ below says whether it is built. Record every deviation here, with its reason.
   what the server says at install time.
 - **Bun's Linux x64 artifact is the baseline build**, which runs on CPUs
   without AVX2, since the catalog cannot choose per CPU.
-- **The CLI acts on the data directory before a control API exists.** The
-  daemon does not write the tool store yet, so `ren tools` is its only
-  writer; once runs use toolsets, changes move behind `/control/v1/tools`
-  and the daemon owns the store, as it owns the rest of its storage.
+- **Two writers, one lock.** `ren tools` on the host and the daemon's
+  `/control/v1/tools` both change the store; a lock file serializes them
+  (`tools_busy` for the second), and each change applies an add/remove
+  `Edit` to whichever generation is current under the lock. `ren tools`
+  does not go through a remote gateway's API yet.
 - **`ClientStatus` keeps its presence check** (`AgentHost::finds`) instead of
   coming from `Provision`. Reading versions runs each client, which would
   stall the supervisor's task on every clients request. Once runs get a
@@ -109,9 +110,11 @@ below says whether it is built. Record every deviation here, with its reason.
    each platform; `Depot::builtin` reads it. Each was installed for real on
    Linux x64 while building it; the other platforms' entries are unverified
    beyond their digests.
-4. **Control API and CLI.** The CLI is built: `ren tools list|install|
-   remove|gc` on this host's data directory. Not built: `/control/v1/tools`,
-   rollback, and `which`.
+4. **Control API and CLI.** Built: `/control/v1/tools` (listing, change,
+   collection) through the gateway's `Toolbox` port, implemented by the
+   daemon's `HostToolbox`, which `ren tools list|install|remove|gc` uses too,
+   so both print the same JSON. Not built: rollback to an older generation,
+   and `which`.
 5. **Tools view.** Not built. One flush table grouped by kind (wanted,
    locked, source, used by, status), changes staged in a plan bar and
    applied as a new generation, and an inspector with provenance,

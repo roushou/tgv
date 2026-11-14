@@ -10,8 +10,8 @@ pub mod host;
 pub mod tools;
 
 use crate::config::RuntimeConfig;
-use crate::host::{ObservationThread, ProcessHost, RandomIds, SystemClock};
-use crate::tools::ToolStore;
+use crate::host::{HostTools, ObservationThread, ProcessHost, RandomIds, SystemClock};
+use crate::tools::{HostToolbox, ToolStore, fetch::ReqwestFetch};
 use ren_gateway::{
     Build, ControlToken, Gateway, ManagementSetup, ReqwestUpstream, Shutdown, Stopped,
     control::Controls,
@@ -217,9 +217,11 @@ impl Daemon {
             clock,
             shutdown.clone(),
         );
+        let tools = Self::toolbox(config, data_dir, &reader);
         let ingress = gateway.into_ingress(
             listener,
             ManagementSetup {
+                tools,
                 reader,
                 backup,
                 retention: config.retention().clone(),
@@ -321,6 +323,28 @@ impl Daemon {
             ids.clone(),
             recorder.clone(),
         )?))
+    }
+
+    /// The host's tools for the control API, or none when downloads or the
+    /// catalog cannot be set up (the tools routes then say so).
+    fn toolbox(
+        config: &RuntimeConfig,
+        data_dir: &std::path::Path,
+        reader: &Reader,
+    ) -> Option<Arc<dyn ren_gateway::tools::Toolbox>> {
+        let fetch = ReqwestFetch::new()
+            .inspect_err(|error| tracing::warn!(%error, "tools: cannot start downloads"))
+            .ok()?;
+        let depot = ren_depot::Depot::builtin()
+            .inspect_err(|error| tracing::warn!(%error, "tools: the catalog is invalid"))
+            .ok()?;
+        Some(Arc::new(HostToolbox::new(
+            ToolStore::new(data_dir.join(ToolStore::FOLDER), fetch),
+            depot,
+            HostTools::new(config.agent_path().to_vec()),
+            HostTools::platform(),
+            Some(reader.clone()),
+        )))
     }
 
     /// Address bound by the current or most recently completed run.

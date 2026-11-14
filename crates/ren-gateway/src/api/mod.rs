@@ -61,6 +61,8 @@ pub struct ManagementSetup {
     /// Agent runs, when run roots are configured; the run routes answer
     /// `runs_disabled` without it.
     pub runs: Option<ren_supervisor::Supervisor>,
+    /// The host's tools; the tools routes answer `tools_disabled` without.
+    pub tools: Option<std::sync::Arc<dyn crate::tools::Toolbox>>,
 }
 
 /// What the read API reads and reports, from the management setup.

@@ -377,6 +377,41 @@ applied by the recorder after what it was recording; the answer is `202`
 `{api_version, subject, change}` once it is queued. `404` `not_found` is an
 unknown subject or change.
 
+### Tools
+
+The runtimes and utilities Ren installs on the daemon's host for its agents
+(see [tools for agents](clients.md#tools-for-agents)). Access is the control
+API's; `ren tools` on the host prints the same JSON (`list --json`).
+
+- `GET /control/v1/tools`: `{api_version, platform, generation, packages,
+  generations}`. `platform` is `linux_x64`, `linux_arm64`, `macos_arm64`, or
+  `null` where Ren installs nothing. Each package has `id`, `kind` (`client`,
+  `runtime`, `utility`), the `release` Ren installs (`null`: only found on
+  `PATH`), what the current generation holds (`installed`: `version`,
+  `sha256`, `dir`), what the daemon's `PATH` has (`system`: `path`, the
+  `version` it reported, or `unread`, what it printed instead), and the
+  clients that need it (`needed_by`). `generations` lists every generation
+  kept, newest first, with its `state` (`current`, `in_use` by a run without
+  an end, or `idle`) and `installs`. Reading versions runs each program found
+  with `--version`.
+- `POST /control/v1/tools/change` `{"add": [...], "remove": [...]}` applies
+  the edit to the current generation: it downloads, verifies, and installs
+  what is added, and makes the next generation current only if every install
+  succeeded. It answers when done: `{api_version, outcome, generation,
+  changes, failures}`, with `outcome` `unchanged`, `activated`, or `failed`
+  (each failure with its `package`, `version`, `stage`, and `reason`; the
+  current generation stays).
+- `POST /control/v1/tools/gc` removes every generation but the current one and
+  those in use, and every install none of them holds: `{api_version,
+  generations, installs}`.
+
+Refusals: `422` `tools_refused` with a `message` (an unknown package, one only
+found on `PATH`, removing what is not installed, or adding and removing one),
+`409` `tools_busy` while another change or `ren tools` holds the store, `501`
+`tools_unsupported` on another platform, `400` `invalid_request` for a body
+that is not an edit, and `503` `tools_disabled` when the daemon could not set
+up downloads or its catalog.
+
 ### Sessions
 
 A session is what an operator works in: a folder, a client, its settings, and

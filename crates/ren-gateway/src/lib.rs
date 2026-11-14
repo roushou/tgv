@@ -57,6 +57,7 @@ mod purity;
 mod relay;
 pub mod retry;
 mod route;
+pub mod tools;
 pub mod upstream;
 pub mod user;
 mod websocket;
@@ -443,7 +444,7 @@ impl<U: Upstream> Gateway<U> {
         let feeds_end = self.shutdown.drain_token();
         self.forwarding_router()
             .merge(api.router())
-            .merge(control.router(reader, management.runs, feeds_end))
+            .merge(control.router(reader, management.runs, management.tools, feeds_end))
     }
 
     /// The forwarding routes, built from the upstream table's bound routes.
