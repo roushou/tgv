@@ -11,7 +11,7 @@ use futures_util::{FutureExt, future::BoxFuture, stream::FuturesUnordered};
 use ren_harness::{
     Harness,
     lines::{LineLimit, Lines},
-    sign_in::{LoginReader, SignInCode, SignInRefused},
+    sign_in::{LoginReader, SignInCode, SignInFlow, SignInRefused},
 };
 use std::{collections::HashMap, time::Duration};
 use tokio::{
@@ -40,6 +40,16 @@ pub enum SignInError {
 
 pub(crate) type CheckReply = oneshot::Sender<Result<SignInState, SignInError>>;
 pub(crate) type OutcomeReply = oneshot::Sender<Result<LoginOutcome, SignInError>>;
+
+/// A wait on a login: going, with its state now and its outcome to come, or
+/// already ended.
+pub(crate) enum WaitOn {
+    Going {
+        login: Login,
+        outcome: oneshot::Receiver<Result<LoginOutcome, SignInError>>,
+    },
+    Done(LoginOutcome),
+}
 
 /// A client's status command, run to its end and read.
 pub(crate) struct StatusCheck;
@@ -108,16 +118,17 @@ pub(crate) struct LoginHandle {
 }
 
 impl LoginTalk {
-    /// How long a login may wait for its code: a sign-in page's lifetime.
-    const AWAITING: Duration = Duration::from_secs(10 * 60);
+    /// How long a login may wait for its code or approval: a device
+    /// code's lifetime.
+    const AWAITING: Duration = Duration::from_secs(15 * 60);
     /// How long a client may take to finish once it has its code.
     const FINISHING: Duration = Duration::from_secs(15);
     const CHUNK: usize = 8 * 1024;
 
-    fn new(attempt: u64) -> (Self, LoginHandle) {
+    fn new(attempt: u64, flow: SignInFlow) -> (Self, LoginHandle) {
         let (codes, code_receiver) = mpsc::channel(1);
         let (cancel, cancel_receiver) = oneshot::channel();
-        let (state, state_receiver) = watch::channel(Login::START);
+        let (state, state_receiver) = watch::channel(Login::start(flow));
         (
             Self {
                 codes: code_receiver,
@@ -144,9 +155,10 @@ impl LoginTalk {
     fn end(&self) -> LoginEnd {
         match &*self.state.borrow() {
             Login::Ended(end) => end.clone(),
-            Login::Starting { .. } | Login::AwaitingCode { .. } | Login::Finishing { .. } => {
-                LoginEnd::Broken
-            }
+            Login::Starting { .. }
+            | Login::AwaitingCode { .. }
+            | Login::AwaitingApproval { .. }
+            | Login::Finishing { .. } => LoginEnd::Broken,
         }
     }
 
@@ -235,8 +247,12 @@ pub(crate) struct SignIns {
     states: HashMap<Harness, SignInState>,
     pub(crate) checks: FuturesUnordered<BoxFuture<'static, Checked>>,
     checking: HashMap<Harness, Vec<CheckReply>>,
-    /// Logins' outcomes waiting on the check that follows them.
-    after: HashMap<Harness, Vec<(LoginEnd, OutcomeReply)>>,
+    /// Logins that ended, waiting on the check that follows them, with who
+    /// waits on their outcome.
+    after: HashMap<Harness, (LoginEnd, Vec<OutcomeReply>)>,
+    /// Each client's last login's outcome, until another starts: for whoever
+    /// asks after it ended.
+    last: HashMap<Harness, LoginOutcome>,
     logins: HashMap<Harness, LoginHandle>,
     pub(crate) talks: FuturesUnordered<BoxFuture<'static, Talked>>,
     attempts: u64,
@@ -290,11 +306,12 @@ impl SignIns {
         for reply in self.checking.remove(&harness).unwrap_or_default() {
             let _ = reply.send(Ok(state.clone()));
         }
-        for (end, reply) in self.after.remove(&harness).unwrap_or_default() {
-            let _ = reply.send(Ok(LoginOutcome {
-                end,
-                state: state.clone(),
-            }));
+        if let Some((end, waiting)) = self.after.remove(&harness) {
+            let outcome = LoginOutcome { end, state };
+            for reply in waiting {
+                let _ = reply.send(Ok(outcome.clone()));
+            }
+            self.last.insert(harness, outcome);
         }
     }
 
@@ -308,8 +325,9 @@ impl SignIns {
     ) -> watch::Receiver<Login> {
         self.attempts += 1;
         let attempt = self.attempts;
-        let (talk, handle) = LoginTalk::new(attempt);
+        let (talk, handle) = LoginTalk::new(attempt, harness.sign_in_flow());
         let state = handle.state.clone();
+        self.last.remove(&harness);
         if let Some(replaced) = self.logins.insert(harness, handle) {
             let current = self.state(harness);
             for reply in replaced.waiting {
@@ -351,14 +369,36 @@ impl SignIns {
             .logins
             .remove(&harness)
             .ok_or(SignInError::NoLogin(harness))?;
-        let current = self.state(harness);
+        let outcome = LoginOutcome {
+            end: LoginEnd::Cancelled,
+            state: self.state(harness),
+        };
         for reply in handle.waiting {
-            let _ = reply.send(Ok(LoginOutcome {
-                end: LoginEnd::Cancelled,
-                state: current.clone(),
-            }));
+            let _ = reply.send(Ok(outcome.clone()));
         }
+        self.last.insert(harness, outcome);
         Ok(())
+    }
+
+    /// Wait on `harness`'s login: running, ended and being checked, or
+    /// ended; refused when there has been none.
+    pub(crate) fn wait(&mut self, harness: Harness) -> Result<WaitOn, SignInError> {
+        let (reply, outcome) = oneshot::channel();
+        if let Some(handle) = self.logins.get_mut(&harness) {
+            let login = handle.state.borrow().clone();
+            handle.waiting.push(reply);
+            return Ok(WaitOn::Going { login, outcome });
+        }
+        if let Some((end, waiting)) = self.after.get_mut(&harness) {
+            let login = Login::Ended(end.clone());
+            waiting.push(reply);
+            return Ok(WaitOn::Going { login, outcome });
+        }
+        self.last
+            .get(&harness)
+            .cloned()
+            .map(WaitOn::Done)
+            .ok_or(SignInError::NoLogin(harness))
     }
 
     /// A login ended. Whether it was the current one: then a check follows,
@@ -376,16 +416,18 @@ impl SignIns {
             .remove(&harness)
             .map(|handle| handle.waiting)
             .unwrap_or_default();
-        self.after
-            .entry(harness)
-            .or_default()
-            .extend(waiting.into_iter().map(|reply| (end.clone(), reply)));
+        self.after.insert(harness, (end, waiting));
         true
     }
 
     /// Answer who waits on a login whose check could not start.
     pub(crate) fn unchecked(&mut self, harness: Harness, error: &SignInError) {
-        for (_, reply) in self.after.remove(&harness).unwrap_or_default() {
+        for reply in self
+            .after
+            .remove(&harness)
+            .map(|(_, waiting)| waiting)
+            .unwrap_or_default()
+        {
             let _ = reply.send(Err(error.clone()));
         }
     }

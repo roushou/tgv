@@ -18,10 +18,12 @@ import {
   signInMethod,
   signInState,
   startedSignIn,
+  waitedSignIn,
   type Login,
   type LoginOutcome,
   type SignInMethod,
   type SignInState,
+  type Waited,
 } from './signIn.ts';
 import {
   Uuid,
@@ -881,6 +883,11 @@ export class RunsClient {
   async signInCode(harness: Drivable, code: string): Promise<LoginOutcome> {
     const path = `/control/runs/clients/${harness}/sign-in/code`;
     return (await this.#send('POST', path, { code }, finishedSignIn, undefined, 28_000)).outcome;
+  }
+  /** Wait up to about 20 seconds for `harness`'s login to end and be checked. */
+  async waitSignIn(harness: Drivable): Promise<Waited> {
+    const path = `/control/runs/clients/${harness}/sign-in/wait`;
+    return (await this.#send('POST', path, {}, waitedSignIn, undefined, 28_000)).waited;
   }
   /** Stop `harness`'s running login. */
   async cancelSignIn(harness: Drivable): Promise<void> {

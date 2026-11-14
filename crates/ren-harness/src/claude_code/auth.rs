@@ -5,7 +5,7 @@
 use crate::{
     Harness,
     launch::LaunchPlan,
-    sign_in::{SignInMethod, Standing, StatedMethod, StatusUnread},
+    sign_in::{Standing, StatedMethod, StatusUnread},
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -27,8 +27,15 @@ impl ClaudeAuth {
     /// code.
     pub(crate) const PROMPT: &'static str = "Paste code here if prompted >";
 
-    pub(crate) fn read_status(stdout: &[u8]) -> Result<Standing, StatusUnread> {
-        let status: Status = serde_json::from_slice(stdout)
+    pub(crate) fn read_status(output: &[u8]) -> Result<Standing, StatusUnread> {
+        // Read with stderr: the JSON object is what lies between its braces.
+        let text = String::from_utf8_lossy(output);
+        let object = text
+            .find('{')
+            .zip(text.rfind('}'))
+            .and_then(|(start, end)| text.get(start..=end))
+            .unwrap_or(&text);
+        let status: Status = serde_json::from_str(object)
             .map_err(|error| StatusUnread(format!("cannot read `claude auth status`: {error}")))?;
         Ok(match (status.logged_in, status.auth_method) {
             (false, _) => Standing::SignedOut,
@@ -45,12 +52,8 @@ impl LaunchPlan {
         Self::claude_auth(&["auth", "status", "--json"])
     }
 
-    /// `claude auth login`, with the account `method` names.
-    pub(crate) fn claude_auth_login(method: SignInMethod) -> Self {
-        let account = match method {
-            SignInMethod::ClaudeSubscription => "--claudeai",
-            SignInMethod::AnthropicConsole => "--console",
-        };
+    /// `claude auth login`, with `account` (`--claudeai` or `--console`).
+    pub(crate) fn claude_auth_login(account: &str) -> Self {
         Self::claude_auth(&["auth", "login", account])
     }
 
@@ -86,6 +89,9 @@ mod tests {
         };
         assert_eq!(method.to_string(), "claude.ai");
         assert!(ClaudeAuth::read_status(b"Not logged in.").is_err());
+        // A warning on stderr around it does not hide it.
+        let warned = b"Warning: something\n{\"loggedIn\": false}\n";
+        assert_eq!(ClaudeAuth::read_status(warned), Ok(Standing::SignedOut));
     }
 
     #[test]

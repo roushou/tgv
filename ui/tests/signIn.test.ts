@@ -126,3 +126,47 @@ test('a client package finds its client, and a chip says its sign-in', () => {
   });
   assert.equal(SignIns.chip({ kind: 'not_checked' }), null);
 });
+
+test('a device login carries its one-time code, and a wait is going or done', async () => {
+  assert.deepEqual(
+    login(
+      {
+        kind: 'awaiting_approval',
+        link: 'https://login.example.test/codex/device',
+        code: 'ACME-12345',
+        said: null,
+      },
+      '',
+    ),
+    {
+      kind: 'awaiting_approval',
+      link: 'https://login.example.test/codex/device',
+      code: 'ACME-12345',
+      said: null,
+    },
+  );
+  assert.equal(SignIns.method('chatgpt'), 'ChatGPT account');
+  const replies = [
+    {
+      kind: 'going',
+      login: {
+        kind: 'awaiting_approval',
+        link: 'https://l.example.test/d',
+        code: 'ACME-1234',
+        said: null,
+      },
+    },
+    {
+      kind: 'done',
+      outcome: {
+        end: { end: 'exited', exit: { kind: 'code', value: 0 }, said: 'Successfully logged in' },
+        state: { kind: 'signed_in', method: 'ChatGPT' },
+      },
+    },
+  ];
+  const client = new RunsClient((async () =>
+    Response.json({ api_version: 1, waited: replies.shift() })) as unknown as typeof fetch);
+  assert.equal((await client.waitSignIn('codex')).kind, 'going');
+  const done = await client.waitSignIn('codex');
+  assert.equal(done.kind === 'done' && done.outcome.state.kind, 'signed_in');
+});

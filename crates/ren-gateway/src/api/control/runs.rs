@@ -250,6 +250,10 @@ impl RunsApi {
                 "/control/v1/runs/clients/{harness}/sign-in/cancel",
                 post(Self::cancel_sign_in),
             )
+            .route(
+                "/control/v1/runs/clients/{harness}/sign-in/wait",
+                post(Self::wait_sign_in),
+            )
             .with_state(Arc::new(self))
     }
 

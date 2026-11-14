@@ -237,10 +237,12 @@ dependencies under "Crates" below. Read the code for current module ownership.
   and which settings change from the next turn); the commands a client
   offers a prompt (`commands`: `ClientCommand`, each codec reading its
   client's own list); a client's own sign-in commands (`sign_in`: the
-  `SignInMethod`s each offers, its status read as a `Standing`, its login
-  read by `LoginReader`, the `https` `SignInLink` it prints, and the
-  `SignInCode` handed back, a secret never shown; Claude Code's in
-  `claude_code`'s `auth`); the gateway URL a harness is pointed at and the
+  `SignInMethod`s each offers and its `SignInFlow` (paste a code back, or a
+  device code approved on the page), its status read as a `Standing`, its
+  login read by `LoginReader`, the `https` `SignInLink` it prints, a device
+  login's `DeviceCode`, and the `SignInCode` handed back, a secret never
+  shown; Claude Code's in `claude_code`'s `auth`, Codex's in `codex`'s
+  `auth`); the gateway URL a harness is pointed at and the
   `UserToken` it presents there (`endpoint`); and `HostEnv` (`host`), the
   host environment that launching and configuration read. It performs
   filesystem and process I/O but has no async runtime, HTTP, database, or
@@ -336,11 +338,11 @@ dependencies under "Crates" below. Read the code for current module ownership.
   streamed pieces; a reply cut off kept as far as it came), and drains every
   run when the last handle is dropped. A client's sign-in on the host is
   read and run through the client's own commands: `sign_in` holds the pure
-  `SignInState` and the `Login` machine (starting, awaiting its code,
-  finishing, ended), and `login` its shell (`StatusCheck`, `LoginTalk`, and
+  `SignInState` and the `Login` machine (starting, awaiting its code or its
+  approval, finishing, ended), and `login` its shell (`StatusCheck`, `LoginTalk`, and
   `SignIns`, one login per client, checked after each login and after a
   failed turn), behind `Supervisor::check_sign_in`, `sign_in`,
-  `sign_in_code`, and `cancel_sign_in`; a login is started with
+  `sign_in_code`, `wait_sign_in`, and `cancel_sign_in`; a login is started with
   `AgentHost::spawn_with_stderr`, so its failure reason is read.
   `src/purity.rs` keeps `run`, `workdir`, `project`, `entries`, `files`,
   `session`, and `sign_in` free of runtime and I/O. The daemon constructs it when `[runs]`
@@ -394,7 +396,7 @@ dependencies under "Crates" below. Read the code for current module ownership.
     as SSE, and what a session can start with (places, clients, and models); it
     holds the run refusals the `sessions` routes share. Its `sign_in` module
     serves each client's sign-in under `/control/v1/runs/clients/{harness}/sign-in`
-    (start, code, check, cancel); the code goes only to the login's stdin. Its `history` module serves
+    (start, code, check, wait, cancel); the code goes only to the login's stdin. Its `history` module serves
     `/control/v1/history`: archiving, unarchiving, and deleting a recording or
     run, checked against the `Reader` and recorded through the recorder.
 - `crates/ren-daemon`: configuration, resource wiring, and lifecycle, with

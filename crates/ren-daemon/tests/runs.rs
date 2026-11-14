@@ -207,7 +207,7 @@ async fn a_session_is_started_prompted_approved_and_stopped_through_the_control_
               "sign_in_methods": ["claude_subscription", "anthropic_console"] },
             { "harness": "codex", "status": "ready", "approvals": ["ask", "edits", "auto"],
               "midway": ["steer", "model", "effort", "approvals"],
-              "sign_in": { "kind": "not_checked" }, "sign_in_methods": [] },
+              "sign_in": { "kind": "signed_out" }, "sign_in_methods": ["chatgpt"] },
             { "harness": "pi", "status": "ready", "approvals": [], "midway": ["steer", "model", "effort"],
               "sign_in": { "kind": "not_checked" }, "sign_in_methods": [] },
             { "harness": "opencode", "status": "ready", "approvals": ["ask", "edits"],
@@ -1026,7 +1026,7 @@ async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api(
         (status, body["error"].clone()),
         (StatusCode::CONFLICT, json!("no_sign_in"))
     );
-    let (status, body) = control.post("/runs/clients/codex/sign-in", json!({})).await;
+    let (status, body) = control.post("/runs/clients/pi/sign-in", json!({})).await;
     assert_eq!(
         (status, body["error"].clone()),
         (StatusCode::CONFLICT, json!("sign_in_not_offered"))
@@ -1035,4 +1035,55 @@ async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api(
         .post(&format!("{sign_in}/code"), json!({ "code": "" }))
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_device_login_shows_its_code_and_is_waited_on_until_it_ends() {
+    let upstream = mock(Router::new()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = TestGateway::with_runs(
+        &config(&upstream),
+        dir.path(),
+        vec![PathBuf::from("/work")],
+        ScriptedHost,
+    )
+    .await;
+    let control = Control::new(&gateway);
+    let sign_in = "/runs/clients/codex/sign-in";
+
+    let (status, _) = control.post(&format!("{sign_in}/wait"), json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Started, it answers once both the link and the code are printed.
+    let (status, body) = control.post(sign_in, json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["method"], "chatgpt");
+    assert_eq!(
+        body["login"],
+        json!({ "kind": "awaiting_approval", "link": "https://login.example.test/codex/device",
+                "code": "ACME-12345",
+                "said": "2. Enter this one-time code (expires in 15 minutes)" })
+    );
+    // Nothing is pasted into a device login.
+    let (status, body) = control
+        .post(&format!("{sign_in}/code"), json!({ "code": "x" }))
+        .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("not_awaiting_code"))
+    );
+
+    // Approved, it ends by itself; the status check after it decides.
+    let (status, body) = control.post(&format!("{sign_in}/wait"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["waited"],
+        json!({ "kind": "done", "outcome": {
+            "end": { "end": "exited", "exit": { "kind": "code", "value": 0 },
+                     "said": "Successfully logged in" },
+            "state": { "kind": "signed_out" } } })
+    );
+    // Asked again after it ended, the same outcome.
+    let (_, again) = control.post(&format!("{sign_in}/wait"), json!({})).await;
+    assert_eq!(again["waited"], body["waited"]);
 }

@@ -2,8 +2,9 @@
 //! that opens a thread, asks one file-change approval per turn, and finishes
 //! the turn once it is answered; or, for Claude Code's own `auth` commands,
 //! a scripted status (always signed out) and login (a link, then a code:
-//! `good` exits 0, anything else fails as Claude Code does). No real client,
-//! network, or credentials.
+//! `good` exits 0, anything else fails as Claude Code does); or, for Codex's
+//! `login`, a status (signed out) and a device login approved at once. No
+//! real client, network, or credentials.
 
 use ren_harness::launch::LaunchPlan;
 use ren_supervisor::{
@@ -92,6 +93,7 @@ impl AgentHost for ScriptedHost {
             .collect();
         match arguments.first().map(String::as_str) {
             Some("auth") => tokio::spawn(auth(arguments, agent_in, agent_out, signal, exit_tx)),
+            Some("login") => tokio::spawn(login(arguments, agent_out, signal, exit_tx)),
             _ => tokio::spawn(serve(agent_in, agent_out, signal, exit_tx)),
         };
         Ok(AgentProcess {
@@ -147,6 +149,36 @@ async fn auth(
             }
             Ok(None) | Err(_) => ProcessExit::Code(1),
         }
+    };
+    let status = tokio::select! {
+        status = script => status,
+        () = kill.fired() => ProcessExit::Signal(9),
+    };
+    drop(out);
+    let _ = exit.send(status);
+}
+
+/// Codex's `login status` (always signed out) or `login --device-auth`,
+/// which shows its link and code and is approved a moment later.
+async fn login(
+    arguments: Vec<String>,
+    mut out: DuplexStream,
+    kill: KillSignal,
+    exit: oneshot::Sender<ProcessExit>,
+) {
+    let script = async {
+        if arguments.get(1).map(String::as_str) == Some("status") {
+            out.write_all(b"Not logged in\n").await.unwrap();
+            return ProcessExit::Code(1);
+        }
+        out.write_all(
+            b"Follow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \x1b[94mhttps://login.example.test/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mACME-12345\x1b[0m\n",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        out.write_all(b"Successfully logged in\n").await.unwrap();
+        ProcessExit::Code(0)
     };
     let status = tokio::select! {
         status = script => status,

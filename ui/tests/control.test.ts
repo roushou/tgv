@@ -111,6 +111,7 @@ test('starting, listing, projects, models, answering, history edits, and the fee
   await proxy.respond(post('/control/runs/clients/claude_code/sign-in/code', { code: 'abc' }));
   await proxy.respond(post('/control/runs/clients/claude_code/sign-in/check', {}));
   await proxy.respond(post('/control/runs/clients/claude_code/sign-in/cancel', {}));
+  await proxy.respond(post('/control/runs/clients/codex/sign-in/wait', {}));
   await proxy.respond(post(`/control/sessions/${run}/approvals/ap-1`, { decision: 'accept' }));
   await proxy.respond(post(`/control/sessions/${run}/stop`, {}));
   await proxy.respond(post(`/control/sessions/${run}/unqueue`, {}));
@@ -136,6 +137,7 @@ test('starting, listing, projects, models, answering, history edits, and the fee
     'POST /control/v1/runs/clients/claude_code/sign-in/code',
     'POST /control/v1/runs/clients/claude_code/sign-in/check',
     'POST /control/v1/runs/clients/claude_code/sign-in/cancel',
+    'POST /control/v1/runs/clients/codex/sign-in/wait',
     `POST /control/v1/sessions/${run}/approvals/ap-1`,
     `POST /control/v1/sessions/${run}/stop`,
     `POST /control/v1/sessions/${run}/unqueue`,

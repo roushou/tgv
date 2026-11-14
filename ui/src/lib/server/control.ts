@@ -103,7 +103,7 @@ const routes: { pattern: RegExp; route: Route }[] = [
   },
   {
     pattern:
-      /^\/control\/runs\/clients\/(claude_code|codex|pi|opencode)\/sign-in\/(code|check|cancel)$/,
+      /^\/control\/runs\/clients\/(claude_code|codex|pi|opencode)\/sign-in\/(code|check|cancel|wait)$/,
     route: { method: 'POST', feed: false, timeout: 30_000 },
   },
   // Sessions: their listing and feed, one session, and what it is offered.

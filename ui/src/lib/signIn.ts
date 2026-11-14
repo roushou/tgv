@@ -17,7 +17,7 @@ import {
   type Stored,
 } from './decode.ts';
 
-export const SIGN_IN_METHODS = ['claude_subscription', 'anthropic_console'] as const;
+export const SIGN_IN_METHODS = ['claude_subscription', 'anthropic_console', 'chatgpt'] as const;
 /** Which account a client signs in with. */
 export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
 export const signInMethod = label(SIGN_IN_METHODS);
@@ -52,8 +52,13 @@ export type LoginEnd =
 export type Login =
   | { kind: 'starting'; said: string | null }
   | { kind: 'awaiting_code'; link: SignInLink; said: string | null }
+  /** A device login: enter `code` on the page at `link`, and approve there. */
+  | { kind: 'awaiting_approval'; link: SignInLink; code: string | null; said: string | null }
   | { kind: 'finishing'; link: SignInLink; said: string | null }
   | { kind: 'ended'; end: LoginEnd };
+
+/** Where a waited-on login stands: still going, or ended and checked. */
+export type Waited = { kind: 'going'; login: Login } | { kind: 'done'; outcome: LoginOutcome };
 
 /** A login's end, and the client's sign-in as checked after it. */
 export interface LoginOutcome {
@@ -133,6 +138,13 @@ export const login: Decoder<Login> = (value, path) => {
     case 'awaiting_code':
     case 'finishing':
       return { kind: value.kind, link: signInLink(value.link, `${path}.link`), said: said() };
+    case 'awaiting_approval':
+      return {
+        kind: 'awaiting_approval',
+        link: signInLink(value.link, `${path}.link`),
+        code: nullable(string)(value.code ?? null, `${path}.code`),
+        said: said(),
+      };
     case 'ended':
       return { kind: 'ended', end: loginEnd(value, path) };
     default:
@@ -144,6 +156,19 @@ export const startedSignIn = versioned(
   object<{ method: Stored<SignInMethod>; login: Login }>({ method: signInMethod, login }),
 );
 export const checkedSignIn = versioned(object<{ sign_in: SignInState }>({ sign_in: signInState }));
+const loginOutcome = object<LoginOutcome>({ end: loginEnd, state: signInState });
+const waited: Decoder<Waited> = (value, path) => {
+  if (!isRecord(value)) throw new ShapeError(path, 'an object');
+  switch (value.kind) {
+    case 'going':
+      return { kind: 'going', login: login(value.login, `${path}.login`) };
+    case 'done':
+      return { kind: 'done', outcome: loginOutcome(value.outcome, `${path}.outcome`) };
+    default:
+      throw new ShapeError(`${path}.kind`, 'going or done');
+  }
+};
+export const waitedSignIn = versioned(object<{ waited: Waited }>({ waited }));
 export const finishedSignIn = versioned(
   object<{ outcome: LoginOutcome }>({
     outcome: object<LoginOutcome>({ end: loginEnd, state: signInState }),
@@ -159,6 +184,8 @@ export class SignIns {
         return 'Claude subscription';
       case 'anthropic_console':
         return 'Anthropic Console';
+      case 'chatgpt':
+        return 'ChatGPT account';
       default:
         return unrecognised(method);
     }

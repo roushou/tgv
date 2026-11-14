@@ -217,7 +217,8 @@ Ren does not sign in, refresh tokens, or substitute an API credential, except an
 operator-key upstream's own key. The client owns authentication. No requests are
 made to providers merely by starting Ren. For the sessions Ren drives, the web
 UI can run a client's own login on the daemon's host
-([Signing Claude Code in](#signing-claude-code-in)).
+([Signing Claude Code in](#signing-claude-code-in),
+[Signing Codex in](#signing-codex-in)).
 
 ## Claude Code
 
@@ -326,6 +327,17 @@ idle sockets close with code `1012` (service restart); sockets with a call still
 running close the same way once it ends, or when the drain deadline passes. See
 OpenAI's [gateway authentication guide](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+### Signing Codex in
+
+Sessions run Codex on the daemon's host under that host's sign-in. When it is
+signed out, the Sessions view says so and its Send becomes **Sign in to
+Codex**. That runs `codex login --device-auth` on the daemon's host: open the
+page it printed (on any device), sign in with your ChatGPT account, and enter
+the one-time code the sheet shows. Codex finishes by itself once you approve,
+and the sheet follows it; Ren then runs `codex login status` to confirm. Ren
+relays the link and the code only. Through the API:
+[Client sign-in](api.md#client-sign-in).
 
 ### Sandbox on Ubuntu
 

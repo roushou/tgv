@@ -1,7 +1,8 @@
 //! A client's sign-in on this host, under
 //! `/control/v1/runs/clients/{harness}/sign-in`: checking it with the
 //! client's own status command, and running the client's own login, whose
-//! link this answers with and whose code it hands back. The code goes only
+//! link (and a device login's code) this answers with, whose pasted code it
+//! hands back, and whose end it can be waited on for. The code goes only
 //! to the login's stdin: it is never logged, recorded, or answered with.
 //! Access is the control API's, as for the other run routes.
 
@@ -40,6 +41,9 @@ pub(super) struct CodeRequest {
 type Api = State<Arc<RunsApi>>;
 
 impl RunsApi {
+    /// How long one wait on a login lasts: under the UI proxy's 30 seconds.
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
     fn harness(harness: &str) -> Result<Harness, Denied> {
         harness
             .parse::<Harness>()
@@ -135,6 +139,29 @@ impl RunsApi {
             "api_version": ControlApi::API_VERSION,
             "harness": harness,
             "outcome": outcome,
+        }))
+        .into_response())
+    }
+
+    /// `POST …/sign-in/wait`: wait for the login to end and the client's
+    /// sign-in to be checked, at most [`Self::WAIT`]; answers with how it
+    /// stands then. A device login ends by itself once approved, so the
+    /// sheet asks again until it is done.
+    pub(super) async fn wait_sign_in(
+        State(api): Api,
+        headers: HeaderMap,
+        Path(harness): Path<String>,
+    ) -> Result<Response, Denied> {
+        let supervisor = api.admit(&headers)?;
+        let harness = Self::harness(&harness)?;
+        let waited = supervisor
+            .wait_sign_in(harness, Self::WAIT)
+            .await
+            .map_err(Self::sign_in_refused)?;
+        Ok(Json(serde_json::json!({
+            "api_version": ControlApi::API_VERSION,
+            "harness": harness,
+            "waited": waited,
         }))
         .into_response())
     }

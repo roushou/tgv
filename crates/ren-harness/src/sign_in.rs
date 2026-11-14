@@ -1,11 +1,14 @@
 //! Signing a client in on its host, through the client's own commands. Ren
 //! reads whether a client is signed in from its status command, and runs
-//! its login, which prints a link to open and reads back the code the page
-//! shows. Ren relays that link and that code and nothing else: the client
-//! receives, keeps, and refreshes its sign-in, and Ren never reads it.
+//! its login, which prints a link to open and then either reads back the
+//! code the page shows ([`SignInFlow::PasteCode`], Claude Code) or shows a
+//! one-time code to enter on the page and finishes once it is approved
+//! ([`SignInFlow::DeviceCode`], Codex). Ren relays the link and the codes
+//! and nothing else: the client receives, keeps, and refreshes its sign-in,
+//! and Ren never reads it.
 //!
 //! Each client that offers this fills the shared types here from its own
-//! module (`claude_code`); [`Harness`] dispatches by `match`. A client whose
+//! module (`claude_code`, `codex`); [`Harness`] dispatches by `match`. A client whose
 //! commands Ren does not know yet offers no sign-in, and its sign-in is
 //! never checked.
 
@@ -25,6 +28,57 @@ pub enum SignInMethod {
     ClaudeSubscription,
     /// Claude Code with an Anthropic Console account, billed by API usage.
     AnthropicConsole,
+    /// Codex with a ChatGPT account, by device code.
+    Chatgpt,
+}
+
+/// How a client's login goes once it has printed its link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignInFlow {
+    /// The page shows a code, pasted back to the login, which then ends.
+    PasteCode,
+    /// The login shows a one-time code to enter on the page, and ends by
+    /// itself once the operator approves there.
+    DeviceCode,
+}
+
+/// The one-time code a device login shows, for the operator to enter on
+/// the sign-in page. Shown to the operator, never logged or recorded.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DeviceCode(String);
+
+impl DeviceCode {
+    /// A code as a device login prints it alone on a line: groups of
+    /// capital letters and digits joined by `-` (`ABCD-12345`).
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        let mut groups = text.split('-');
+        let shaped = text.len() <= 32
+            && text.contains('-')
+            && groups.all(|group| {
+                (3..=10).contains(&group.len())
+                    && group.chars().all(|character| {
+                        character.is_ascii_uppercase() || character.is_ascii_digit()
+                    })
+            });
+        shaped.then(|| Self(text.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for DeviceCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DeviceCode(<redacted>)")
+    }
+}
+
+impl Serialize for DeviceCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
 }
 
 /// What a client's status command says of its sign-in.
@@ -150,8 +204,11 @@ pub enum SignInCodeError {
 /// Something a login printed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginEvent {
-    /// The page to open; the login now waits for the code it shows.
+    /// The page to open; the login now waits for the code it shows, or for
+    /// the operator to approve there.
     Link(SignInLink),
+    /// The one-time code to enter on the page (a device login).
+    DeviceCode(DeviceCode),
     /// Any other line, cleaned to printable text: what the client last said
     /// (a failure's reason, when it fails).
     Said(String),
@@ -164,7 +221,9 @@ pub enum LoginEvent {
 #[derive(Debug)]
 pub struct LoginReader {
     prompt: Option<&'static str>,
+    flow: SignInFlow,
     linked: bool,
+    coded: bool,
 }
 
 impl LoginReader {
@@ -177,30 +236,60 @@ impl LoginReader {
                 Harness::ClaudeCode => Some(crate::claude_code::ClaudeAuth::PROMPT),
                 Harness::Codex | Harness::Pi | Harness::OpenCode => None,
             },
+            flow: harness.sign_in_flow(),
             linked: false,
+            coded: false,
         }
+    }
+
+    /// `text` as a terminal shows it: its escape sequences (colors) and
+    /// other control characters left out.
+    pub(crate) fn plain(text: &str) -> String {
+        let mut plain = String::with_capacity(text.len());
+        let mut characters = text.chars().peekable();
+        while let Some(character) = characters.next() {
+            if character == '\u{1b}' {
+                // CSI: `ESC [`, parameters, then one final byte.
+                if characters.next_if_eq(&'[').is_some() {
+                    for next in characters.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            if !character.is_control() {
+                plain.push(character);
+            }
+        }
+        plain
     }
 
     pub fn receive(&mut self, frame: Framed) -> Option<LoginEvent> {
         let Framed::Line(bytes) = frame else {
             return None;
         };
-        let text = String::from_utf8_lossy(&bytes);
+        let text = Self::plain(&String::from_utf8_lossy(&bytes));
         if !self.linked
             && let Some(link) = SignInLink::find(&text)
         {
             self.linked = true;
             return Some(LoginEvent::Link(link));
         }
+        if self.linked
+            && !self.coded
+            && self.flow == SignInFlow::DeviceCode
+            && let Some(code) = DeviceCode::parse(&text)
+        {
+            self.coded = true;
+            return Some(LoginEvent::DeviceCode(code));
+        }
         let text = self
             .prompt
             .and_then(|prompt| text.trim_start().strip_prefix(prompt))
             .unwrap_or(&text);
-        let said: String = text
-            .chars()
-            .filter(|character| !character.is_control())
-            .take(Self::SAID)
-            .collect();
+        let said: String = text.chars().take(Self::SAID).collect();
         let said = said.trim();
         (!said.is_empty()).then(|| LoginEvent::Said(said.to_owned()))
     }
@@ -215,44 +304,61 @@ impl Harness {
                 SignInMethod::ClaudeSubscription,
                 SignInMethod::AnthropicConsole,
             ],
-            Self::Codex | Self::Pi | Self::OpenCode => &[],
+            Self::Codex => &[SignInMethod::Chatgpt],
+            Self::Pi | Self::OpenCode => &[],
         }
     }
 
-    /// The command that says whether this client is signed in, printing it
-    /// on stdout; none where Ren cannot read it yet.
+    /// How this client's login goes once it has printed its link.
+    pub fn sign_in_flow(self) -> SignInFlow {
+        match self {
+            Self::Codex => SignInFlow::DeviceCode,
+            Self::ClaudeCode | Self::Pi | Self::OpenCode => SignInFlow::PasteCode,
+        }
+    }
+
+    /// The command that says whether this client is signed in; none where
+    /// Ren cannot read it yet. It is read from stdout and stderr together.
     pub fn sign_in_status(self) -> Option<LaunchPlan> {
         match self {
             Self::ClaudeCode => Some(LaunchPlan::claude_auth_status()),
-            Self::Codex | Self::Pi | Self::OpenCode => None,
+            Self::Codex => Some(LaunchPlan::codex_login_status()),
+            Self::Pi | Self::OpenCode => None,
         }
     }
 
-    /// Read what the status command printed on stdout.
-    pub fn read_sign_in(self, stdout: &[u8]) -> Result<Standing, StatusUnread> {
+    /// Read what the status command printed, stdout and stderr together.
+    pub fn read_sign_in(self, output: &[u8]) -> Result<Standing, StatusUnread> {
         match self {
-            Self::ClaudeCode => crate::claude_code::ClaudeAuth::read_status(stdout),
-            Self::Codex | Self::Pi | Self::OpenCode => Err(StatusUnread(format!(
+            Self::ClaudeCode => crate::claude_code::ClaudeAuth::read_status(output),
+            Self::Codex => crate::codex::CodexAuth::read_status(output),
+            Self::Pi | Self::OpenCode => Err(StatusUnread(format!(
                 "Ren cannot read {self}'s sign-in yet"
             ))),
         }
     }
 
-    /// The client's own login, signing in with `method`: it prints a link
-    /// and reads the code back from stdin.
+    /// The client's own login, signing in with `method`: it prints a link,
+    /// then goes as [`Self::sign_in_flow`] says.
     pub fn sign_in(self, method: SignInMethod) -> Result<LaunchPlan, SignInRefused> {
-        if !self.sign_in_methods().contains(&method) {
-            return Err(match self.sign_in_methods() {
-                [] => SignInRefused::NotOffered(self),
-                _ => SignInRefused::NoSuchMethod {
-                    harness: self,
-                    method,
-                },
-            });
-        }
-        match self {
-            Self::ClaudeCode => Ok(LaunchPlan::claude_auth_login(method)),
-            Self::Codex | Self::Pi | Self::OpenCode => Err(SignInRefused::NotOffered(self)),
+        match (self, method) {
+            (Self::ClaudeCode, SignInMethod::ClaudeSubscription) => {
+                Ok(LaunchPlan::claude_auth_login("--claudeai"))
+            }
+            (Self::ClaudeCode, SignInMethod::AnthropicConsole) => {
+                Ok(LaunchPlan::claude_auth_login("--console"))
+            }
+            (Self::Codex, SignInMethod::Chatgpt) => Ok(LaunchPlan::codex_device_login()),
+            (Self::Pi | Self::OpenCode, _) => Err(SignInRefused::NotOffered(self)),
+            (
+                Self::ClaudeCode | Self::Codex,
+                SignInMethod::ClaudeSubscription
+                | SignInMethod::AnthropicConsole
+                | SignInMethod::Chatgpt,
+            ) => Err(SignInRefused::NoSuchMethod {
+                harness: self,
+                method,
+            }),
         }
     }
 }
@@ -284,7 +390,7 @@ mod tests {
         );
         assert_eq!(
             reader.receive(line("See https://example.com/help\u{1b}[0m")),
-            Some(LoginEvent::Said("See https://example.com/help[0m".into()))
+            Some(LoginEvent::Said("See https://example.com/help".into()))
         );
         assert_eq!(reader.receive(line("   ")), None);
         // Its prompt, which has no newline, begins the next line.
@@ -327,6 +433,52 @@ mod tests {
                 .sign_in(SignInMethod::ClaudeSubscription)
                 .is_err()
         );
-        assert!(Harness::Codex.sign_in_status().is_none());
+        assert!(Harness::Codex.sign_in(SignInMethod::Chatgpt).is_ok());
+        assert!(Harness::Pi.sign_in_status().is_none());
+    }
+
+    #[test]
+    fn a_device_login_gives_its_link_then_its_code_without_colors() {
+        // As Codex prints it, colors and all (the code is invented).
+        let mut reader = LoginReader::new(Harness::Codex);
+        let events: Vec<_> = [
+            "Welcome to Codex [v\u{1b}[90m0.162.1\u{1b}[0m]",
+            "1. Open this link in your browser and sign in to your account",
+            "   \u{1b}[94mhttps://auth.example.test/codex/device\u{1b}[0m",
+            "2. Enter this one-time code \u{1b}[90m(expires in 15 minutes)\u{1b}[0m",
+            "   \u{1b}[94mACME-12345\u{1b}[0m",
+        ]
+        .into_iter()
+        .filter_map(|text| reader.receive(line(text)))
+        .collect();
+        assert_eq!(
+            events.first(),
+            Some(&LoginEvent::Said("Welcome to Codex [v0.162.1]".into()))
+        );
+        let Some(LoginEvent::Link(link)) = events.get(2) else {
+            panic!("no link: {events:?}");
+        };
+        assert_eq!(link.as_str(), "https://auth.example.test/codex/device");
+        let Some(LoginEvent::DeviceCode(code)) = events.get(4) else {
+            panic!("no code: {events:?}");
+        };
+        assert_eq!(code.as_str(), "ACME-12345");
+        assert_eq!(format!("{code:?}"), "DeviceCode(<redacted>)");
+    }
+
+    #[test]
+    fn only_code_shaped_lines_are_device_codes() {
+        use super::DeviceCode;
+        assert!(DeviceCode::parse("ABCD-1234").is_some());
+        assert!(DeviceCode::parse("abcd-1234").is_none());
+        assert!(DeviceCode::parse("ABCD1234").is_none());
+        assert!(DeviceCode::parse("Login failed").is_none());
+        // A paste-code client never reads a device code.
+        let mut reader = LoginReader::new(Harness::ClaudeCode);
+        reader.receive(line("visit: https://example.com/a"));
+        assert_eq!(
+            reader.receive(line("ABCD-1234")),
+            Some(LoginEvent::Said("ABCD-1234".into()))
+        );
     }
 }

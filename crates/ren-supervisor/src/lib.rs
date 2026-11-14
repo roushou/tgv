@@ -35,7 +35,7 @@ pub use run::{Approvals, Delivery, ProcessExit, RunCommand, RunRefused, RunState
 pub use session::{
     SessionAction, SessionInput, SessionPhase, SessionRefused, SessionState, Shelving,
 };
-pub use sign_in::{Login, LoginEnd, LoginOutcome, SignInState};
+pub use sign_in::{Login, LoginEnd, LoginOutcome, SignInState, Waited};
 pub use task::SupervisorTask;
 pub use workdir::{Bounds, Roots, Workdir, WorkdirError};
 
@@ -377,6 +377,10 @@ pub(crate) enum SignInRequest {
         harness: Harness,
         reply: oneshot::Sender<Result<(), SignInError>>,
     },
+    Wait {
+        harness: Harness,
+        reply: oneshot::Sender<Result<login::WaitOn, SignInError>>,
+    },
 }
 
 impl Supervisor {
@@ -536,8 +540,8 @@ impl Supervisor {
     }
 
     /// Start `harness`'s own login with `method`, replacing any running
-    /// one. Answers once it prints its link, or with how it stands after
-    /// [`Self::LINK_WAIT`].
+    /// one. Answers once it prints its link (and a device login its code),
+    /// or with how it stands after [`Self::LINK_WAIT`].
     pub async fn sign_in(
         &self,
         harness: Harness,
@@ -550,12 +554,9 @@ impl Supervisor {
                 reply,
             })
             .await?;
-        let shown = tokio::time::timeout(
-            Self::LINK_WAIT,
-            login.wait_for(|state| !matches!(state, Login::Starting { .. })),
-        )
-        .await
-        .map(|shown| shown.map(|state| state.clone()));
+        let shown = tokio::time::timeout(Self::LINK_WAIT, login.wait_for(Login::shown))
+            .await
+            .map(|shown| shown.map(|state| state.clone()));
         Ok(match shown {
             Ok(Ok(state)) => state,
             // The login ended and its state went with it: it was replaced.
@@ -577,6 +578,29 @@ impl Supervisor {
             reply,
         })
         .await
+    }
+
+    /// Wait for `harness`'s login to end and its sign-in to be checked, at
+    /// most `within`: a device login ends by itself once approved. Answers
+    /// with how it stands when that time is up.
+    pub async fn wait_sign_in(
+        &self,
+        harness: Harness,
+        within: std::time::Duration,
+    ) -> Result<Waited, SignInError> {
+        match self
+            .sign_in_request(|reply| SignInRequest::Wait { harness, reply })
+            .await?
+        {
+            login::WaitOn::Done(outcome) => Ok(Waited::Done { outcome }),
+            login::WaitOn::Going { login, outcome } => {
+                match tokio::time::timeout(within, outcome).await {
+                    Ok(Ok(outcome)) => outcome.map(|outcome| Waited::Done { outcome }),
+                    Ok(Err(_)) => Err(SignInError::Gone),
+                    Err(_) => Ok(Waited::Going { login }),
+                }
+            }
+        }
     }
 
     /// Cancel `harness`'s running login.

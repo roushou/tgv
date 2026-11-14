@@ -568,6 +568,7 @@
       methods={read?.clients.find((entry) => entry.harness === signing)?.sign_in_methods ?? []}
       start={(method) => client.startSignIn(signing, method)}
       code={(code) => client.signInCode(signing, code)}
+      wait={() => client.waitSignIn(signing)}
       cancel={() => client.cancelSignIn(signing)}
       onclose={() => {
         signingIn = null;

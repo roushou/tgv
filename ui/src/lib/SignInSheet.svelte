@@ -1,7 +1,9 @@
 <!--
   A client's sign-in, run on the daemon's host by the client's own login:
-  the daemon starts it, this shows the link it printed, and the code the
-  page shows goes back to it. The client keeps and refreshes what it
+  the daemon starts it and this shows the link it printed. Then either the
+  code the page shows goes back to it (Claude Code), or this shows the
+  one-time code to enter on the page and waits until the operator approves
+  there and the login ends by itself (Codex). The client keeps and refreshes what it
   receives; Ren never sees it. The sheet says so, and names the client, not
   a provider, so it never passes for a provider's own page.
 -->
@@ -10,7 +12,13 @@
   import CopyButton from './CopyButton.svelte';
   import Icon from './Icon.svelte';
   import { RunCommandError, type Drivable } from './runs.ts';
-  import { SignIns, type Login, type LoginOutcome, type SignInMethod } from './signIn.ts';
+  import {
+    SignIns,
+    type Login,
+    type LoginOutcome,
+    type SignInMethod,
+    type Waited,
+  } from './signIn.ts';
   import type { Stored } from './decode.ts';
 
   let {
@@ -19,6 +27,7 @@
     methods,
     start,
     code: sendCode,
+    wait,
     cancel,
     onclose,
   }: {
@@ -28,6 +37,8 @@
     methods: readonly Stored<SignInMethod>[];
     start: (method: SignInMethod) => Promise<Login>;
     code: (code: string) => Promise<LoginOutcome>;
+    /** Wait a while for the login to end and be checked. */
+    wait: () => Promise<Waited>;
     cancel: () => Promise<void>;
     /** The sheet closed: with the outcome when a login ended. */
     onclose: (outcome: LoginOutcome | null) => void;
@@ -39,11 +50,13 @@
     | { kind: 'starting' }
     | { kind: 'awaiting'; link: string; said: string | null }
     | { kind: 'sending'; link: string }
+    /** A device login: the operator enters `code` at `link` and approves. */
+    | { kind: 'approving'; link: string; code: string | null }
     | { kind: 'done'; outcome: LoginOutcome }
     | { kind: 'failed'; message: string };
 
   const known = (method: Stored<SignInMethod>): method is SignInMethod =>
-    method === 'claude_subscription' || method === 'anthropic_console';
+    method === 'claude_subscription' || method === 'anthropic_console' || method === 'chatgpt';
   const offered = $derived(methods.filter(known));
   let method = $state<SignInMethod | null>(null);
   const chosen = $derived(method ?? offered[0] ?? null);
@@ -85,6 +98,10 @@
         case 'finishing':
           step = { kind: 'awaiting', link: login.link, said: login.said };
           break;
+        case 'awaiting_approval':
+          step = { kind: 'approving', link: login.link, code: login.code };
+          void follow();
+          break;
         case 'starting':
           step = {
             kind: 'failed',
@@ -106,6 +123,29 @@
     }
   }
 
+  /** Which wait is current: a closed sheet or a new start ends the old one. */
+  let following = 0;
+  /** Wait on a device login, again and again, until it ends. */
+  async function follow() {
+    const turn = ++following;
+    while (turn === following && step.kind === 'approving') {
+      try {
+        const waited = await wait();
+        if (turn !== following || step.kind !== 'approving') return;
+        if (waited.kind === 'done') {
+          step = { kind: 'done', outcome: waited.outcome };
+          return;
+        }
+        if (waited.login.kind === 'awaiting_approval' && waited.login.code) {
+          step = { ...step, code: waited.login.code };
+        }
+      } catch (error) {
+        if (turn === following) step = { kind: 'failed', message: reason(error) };
+        return;
+      }
+    }
+  }
+
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (step.kind !== 'awaiting' || !pasted.trim()) return;
@@ -121,7 +161,9 @@
   }
 
   async function close() {
-    const running = step.kind === 'awaiting' || step.kind === 'starting';
+    const running =
+      step.kind === 'awaiting' || step.kind === 'starting' || step.kind === 'approving';
+    following += 1;
     const outcome = step.kind === 'done' ? step.outcome : null;
     dialog?.close();
     if (running) await cancel().catch(() => undefined);
@@ -222,6 +264,40 @@
             >It goes only to {client}’s login. Ren doesn’t keep or record it.</span
           >
         </form>
+      </li>
+    </ol>
+    <footer>
+      <button class="button" onclick={() => void close()}>Cancel sign-in</button>
+    </footer>
+  {:else if step.kind === 'approving'}
+    <ol class="steps">
+      <li>
+        <span class="step-title">Open the page {client} printed, and sign in there</span>
+        <span class="link">
+          <a class="mono" href={step.link} target="_blank" rel="noopener noreferrer">{step.link}</a>
+          <CopyButton text={step.link} label="Copy the link" />
+          <a class="button small" href={step.link} target="_blank" rel="noopener noreferrer"
+            >Open ↗</a
+          >
+        </span>
+      </li>
+      <li>
+        <span class="step-title">Enter this one-time code on that page</span>
+        {#if step.code}
+          <span class="device">
+            <output class="mono" aria-label="One-time code">{step.code}</output>
+            <CopyButton text={step.code} label="Copy the code" />
+          </span>
+          <span class="muted small-note"
+            >Only enter it on a page you opened from this sheet. It expires in about 15 minutes.</span
+          >
+        {:else}
+          <span class="muted">{client} has not shown its code yet…</span>
+        {/if}
+      </li>
+      <li class="waiting" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        Waiting for you to approve. {client} finishes by itself, and this sheet follows.
       </li>
     </ol>
     <footer>
@@ -347,6 +423,44 @@
     background: var(--surface);
     color: var(--ink);
     font-size: 13px;
+  }
+  .device {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .device output {
+    padding: 8px 14px;
+    border: 1px solid var(--line);
+    background: var(--surface-inset);
+    font-size: 24px;
+    letter-spacing: 0.14em;
+    user-select: all;
+  }
+  .waiting {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    color: var(--muted);
+  }
+  .spinner {
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none;
+    }
   }
   .small-note {
     font-size: 12px;

@@ -40,9 +40,12 @@ pub enum AgentError {
     Seed(#[from] super::seed::SeedError),
     #[error("Login failed: That code wasn't accepted. The dev slot's code is `acme`.")]
     LoginRefused,
+    /// The fake `codex login status`, signed out: it exits 1, as Codex does.
+    #[error("signed out")]
+    SignedOut,
 }
 
-pub use auth::FakeClaudeAuth;
+pub use auth::{FakeClaudeAuth, FakeCodexAuth};
 
 /// The client a fake agent plays.
 #[derive(Debug, Clone, Copy, ValueEnum)]

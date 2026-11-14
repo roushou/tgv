@@ -1007,7 +1007,7 @@ impl<H: AgentHost> SupervisorTask<H> {
         }
         let process = self
             .host
-            .spawn(&plan, &self.root_workdir()?, &self.host.tools())
+            .spawn_with_stderr(&plan, &self.root_workdir()?, &self.host.tools())
             .map_err(|error| {
                 tracing::debug!(%harness, %error, "cannot start a client's status command");
                 SignInError::Spawn
@@ -1050,6 +1050,9 @@ impl<H: AgentHost> SupervisorTask<H> {
             } => sign_ins.code(harness, code, reply),
             SignInRequest::Cancel { harness, reply } => {
                 let _ = reply.send(sign_ins.cancel(harness));
+            }
+            SignInRequest::Wait { harness, reply } => {
+                let _ = reply.send(sign_ins.wait(harness));
             }
         }
     }
