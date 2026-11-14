@@ -879,10 +879,10 @@ export class RunsClient {
     const path = `/control/runs/clients/${harness}/sign-in`;
     return (await this.#send('POST', path, { method }, startedSignIn, undefined, 28_000)).login;
   }
-  /** Hand the page's code to `harness`'s login; answers once it ended and was checked. */
-  async signInCode(harness: Drivable, code: string): Promise<LoginOutcome> {
-    const path = `/control/runs/clients/${harness}/sign-in/code`;
-    return (await this.#send('POST', path, { code }, finishedSignIn, undefined, 28_000)).outcome;
+  /** Hand `harness`'s login what it waits for (a code, a key, or an address); answers once it ended and was checked. */
+  async signInAnswer(harness: Drivable, answer: string): Promise<LoginOutcome> {
+    const path = `/control/runs/clients/${harness}/sign-in/answer`;
+    return (await this.#send('POST', path, { answer }, finishedSignIn, undefined, 28_000)).outcome;
   }
   /** Wait up to about 20 seconds for `harness`'s login to end and be checked. */
   async waitSignIn(harness: Drivable): Promise<Waited> {

@@ -1,7 +1,7 @@
 //! A client's sign-in on this host, under
 //! `/control/v1/runs/clients/{harness}/sign-in`: checking it with the
 //! client's own status command, and running the client's own login, whose
-//! link (and a device login's code) this answers with, whose pasted code it
+//! link (and a device login's code) this answers with, whose answers it
 //! hands back, and whose end it can be waited on for. The code goes only
 //! to the login's stdin: it is never logged, recorded, or answered with.
 //! Access is the control API's, as for the other run routes.
@@ -35,8 +35,8 @@ pub(super) struct StartRequest {
 /// address the browser could not open. Not `Debug`: it is a secret.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct CodeRequest {
-    code: String,
+pub(super) struct AnswerRequest {
+    answer: String,
 }
 
 type Api = State<Arc<RunsApi>>;
@@ -129,18 +129,18 @@ impl RunsApi {
         .into_response())
     }
 
-    /// `POST …/sign-in/code`: hand the running login what it waits for (the
+    /// `POST …/sign-in/answer`: hand the running login what it waits for (the
     /// page's code, an API key, or the address the browser could not open),
     /// answering once it has ended and the client's sign-in was checked.
-    pub(super) async fn sign_in_code(
+    pub(super) async fn answer_sign_in(
         State(api): Api,
         headers: HeaderMap,
         Path(harness): Path<String>,
-        body: Result<Json<CodeRequest>, JsonRejection>,
+        body: Result<Json<AnswerRequest>, JsonRejection>,
     ) -> Result<Response, Denied> {
         let supervisor = api.admit(&headers)?;
         let harness = Self::harness(&harness)?;
-        let answer = SignInAnswer::parse(&Self::body(body)?.code)
+        let answer = SignInAnswer::parse(&Self::body(body)?.answer)
             .map_err(|_| Denied::Control(Refusal::Invalid))?;
         let outcome = supervisor
             .answer_sign_in(harness, answer)

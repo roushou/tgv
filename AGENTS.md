@@ -401,7 +401,7 @@ dependencies under "Crates" below. Read the code for current module ownership.
     as SSE, and what a session can start with (places, clients, and models); it
     holds the run refusals the `sessions` routes share. Its `sign_in` module
     serves each client's sign-in under `/control/v1/runs/clients/{harness}/sign-in`
-    (start, code, check, wait, cancel); the code goes only to the login's stdin. Its `history` module serves
+    (start, answer, check, wait, cancel); an answer goes only to the login. Its `history` module serves
     `/control/v1/history`: archiving, unarchiving, and deleting a recording or
     run, checked against the `Reader` and recorded through the recorder.
 - `crates/ren-daemon`: configuration, resource wiring, and lifecycle, with

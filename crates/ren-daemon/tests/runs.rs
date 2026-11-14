@@ -974,7 +974,7 @@ async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api(
         (StatusCode::CONFLICT, json!("no_sign_in"))
     );
     let (status, body) = control
-        .post(&format!("{sign_in}/code"), json!({ "code": "good" }))
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "good" }))
         .await;
     assert_eq!(
         (status, body["error"].clone()),
@@ -999,7 +999,7 @@ async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api(
     // A wrong code: the login fails and says why, and the client is still
     // signed out as its status says. The code is never answered with.
     let (status, body) = control
-        .post(&format!("{sign_in}/code"), json!({ "code": "bad" }))
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "bad" }))
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -1021,7 +1021,7 @@ async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api(
     let (status, _) = control.post(&format!("{sign_in}/cancel"), json!({})).await;
     assert_eq!(status, StatusCode::OK);
     let (status, body) = control
-        .post(&format!("{sign_in}/code"), json!({ "code": "good" }))
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "good" }))
         .await;
     assert_eq!(
         (status, body["error"].clone()),
@@ -1035,7 +1035,7 @@ async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api(
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = control
-        .post(&format!("{sign_in}/code"), json!({ "code": "" }))
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "" }))
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
@@ -1069,7 +1069,7 @@ async fn a_device_login_shows_its_code_and_is_waited_on_until_it_ends() {
     );
     // Nothing is pasted into a device login.
     let (status, body) = control
-        .post(&format!("{sign_in}/code"), json!({ "code": "x" }))
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "x" }))
         .await;
     assert_eq!(
         (status, body["error"].clone()),
@@ -1117,8 +1117,8 @@ async fn a_key_is_typed_into_the_login_and_a_redirect_is_opened_only_when_it_is_
     );
     let (status, body) = control
         .post(
-            &format!("{pi}/code"),
-            json!({ "code": "sk-ant-acme-not-a-key" }),
+            &format!("{pi}/answer"),
+            json!({ "answer": "sk-ant-acme-not-a-key" }),
         )
         .await;
     assert_eq!(status, StatusCode::OK);
@@ -1147,7 +1147,7 @@ async fn a_key_is_typed_into_the_login_and_a_redirect_is_opened_only_when_it_is_
         ("approved", "redirect_not_an_address"),
     ] {
         let (status, body) = control
-            .post(&format!("{opencode}/code"), json!({ "code": pasted }))
+            .post(&format!("{opencode}/answer"), json!({ "answer": pasted }))
             .await;
         assert_eq!(
             (status, body["error"].clone()),
@@ -1156,8 +1156,8 @@ async fn a_key_is_typed_into_the_login_and_a_redirect_is_opened_only_when_it_is_
     }
     let (status, body) = control
         .post(
-            &format!("{opencode}/code"),
-            json!({ "code": "http://127.0.0.1:39547/auth/callback?code=acme&state=acme" }),
+            &format!("{opencode}/answer"),
+            json!({ "answer": "http://127.0.0.1:39547/auth/callback?code=acme&state=acme" }),
         )
         .await;
     assert_eq!(status, StatusCode::OK);

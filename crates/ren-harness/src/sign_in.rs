@@ -118,8 +118,7 @@ impl Serialize for DeviceCode {
 }
 
 /// What a client's status commands say of its sign-in.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Standing {
     /// Signed in, as the client names how.
     SignedIn {

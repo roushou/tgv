@@ -241,7 +241,7 @@ impl<H: AgentHost> SupervisorTask<H> {
                     }
                 }
                 Some((harness, attempt, end)) = sign_ins.talks.next(), if !sign_ins.talks.is_empty() => {
-                    tracing::debug!(%harness, ?end, "a client's sign-in ended");
+                    tracing::debug!(%harness, "a client's sign-in ended");
                     if sign_ins.talked(harness, attempt, end) {
                         let mut unstarted = None;
                         sign_ins.check(harness, None, || {

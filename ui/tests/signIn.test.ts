@@ -80,7 +80,7 @@ test('the client starts a sign-in, hands over the code, and reads clients withou
         login: { kind: 'awaiting_code', link: 'https://login.example.test/a', said: null },
       });
     }
-    if (url.endsWith('/sign-in/code')) {
+    if (url.endsWith('/sign-in/answer')) {
       return Response.json({
         api_version: 1,
         outcome: {
@@ -97,14 +97,14 @@ test('the client starts a sign-in, hands over the code, and reads clients withou
   }) as typeof fetch);
   const started = await client.startSignIn('claude_code', 'claude_subscription');
   assert.equal(started.kind, 'awaiting_code');
-  const outcome = await client.signInCode('claude_code', 'abc');
+  const outcome = await client.signInAnswer('claude_code', 'abc');
   assert.equal(outcome.state.kind, 'signed_in');
   const [codex] = await client.clients();
   assert.deepEqual(codex?.sign_in, { kind: 'not_checked' });
   assert.deepEqual(codex?.sign_in_methods, []);
   assert.deepEqual(seen.slice(0, 2), [
     'POST /control/runs/clients/claude_code/sign-in {"method":"claude_subscription"}',
-    'POST /control/runs/clients/claude_code/sign-in/code {"code":"abc"}',
+    'POST /control/runs/clients/claude_code/sign-in/answer {"answer":"abc"}',
   ]);
 });
 

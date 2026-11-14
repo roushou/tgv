@@ -108,7 +108,7 @@ test('starting, listing, projects, models, answering, history edits, and the fee
   await proxy.respond(
     post('/control/runs/clients/claude_code/sign-in', { method: 'anthropic_console' }),
   );
-  await proxy.respond(post('/control/runs/clients/claude_code/sign-in/code', { code: 'abc' }));
+  await proxy.respond(post('/control/runs/clients/claude_code/sign-in/answer', { answer: 'abc' }));
   await proxy.respond(post('/control/runs/clients/claude_code/sign-in/check', {}));
   await proxy.respond(post('/control/runs/clients/claude_code/sign-in/cancel', {}));
   await proxy.respond(post('/control/runs/clients/codex/sign-in/wait', {}));
@@ -134,7 +134,7 @@ test('starting, listing, projects, models, answering, history edits, and the fee
     'GET /control/v1/runs/clients',
     'GET /control/v1/runs/clients/pi/models',
     'POST /control/v1/runs/clients/claude_code/sign-in',
-    'POST /control/v1/runs/clients/claude_code/sign-in/code',
+    'POST /control/v1/runs/clients/claude_code/sign-in/answer',
     'POST /control/v1/runs/clients/claude_code/sign-in/check',
     'POST /control/v1/runs/clients/claude_code/sign-in/cancel',
     'POST /control/v1/runs/clients/codex/sign-in/wait',

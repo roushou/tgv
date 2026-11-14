@@ -26,7 +26,7 @@
     client,
     methods,
     start,
-    code: sendCode,
+    answer: sendAnswer,
     wait,
     cancel,
     onclose,
@@ -36,7 +36,8 @@
     client: string;
     methods: readonly Stored<SignInMethod>[];
     start: (method: SignInMethod) => Promise<Login>;
-    code: (code: string) => Promise<LoginOutcome>;
+    /** Hand the login what it waits for: a code, a key, or an address. */
+    answer: (answer: string) => Promise<LoginOutcome>;
     /** Wait a while for the login to end and be checked. */
     wait: () => Promise<Waited>;
     cancel: () => Promise<void>;
@@ -183,7 +184,7 @@
     const asked = step.asked;
     step = { kind: 'asking', asked, phase: 'sending', problem: null };
     try {
-      step = { kind: 'done', outcome: await sendCode(pasted) };
+      step = { kind: 'done', outcome: await sendAnswer(pasted) };
     } catch (error) {
       // A wrong address can be pasted again; anything else ends the sign-in.
       const again = error instanceof RunCommandError && (error.code ?? '').startsWith('redirect_');

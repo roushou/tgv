@@ -19,6 +19,32 @@ use std::{
     path::Path,
 };
 
+/// A fake client's signed-out marker: a `<client>-signed-out` file in the
+/// slot's data directory, there while it is signed out.
+struct SignedOut(std::path::PathBuf);
+
+impl SignedOut {
+    fn of(data_dir: &Path, client: &str) -> Self {
+        Self(data_dir.join(format!("{client}-signed-out")))
+    }
+
+    fn signed_out(&self) -> bool {
+        self.0.exists()
+    }
+
+    fn sign_in(&self) -> Result<(), AgentError> {
+        match std::fs::remove_file(&self.0) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(AgentError::Stdio(error)),
+        }
+    }
+
+    fn sign_out(&self) -> Result<(), AgentError> {
+        std::fs::write(&self.0, b"").map_err(AgentError::Stdio)
+    }
+}
+
 pub struct FakeClaudeAuth;
 
 impl FakeClaudeAuth {
@@ -26,26 +52,17 @@ impl FakeClaudeAuth {
     pub const CODE: &'static str = "acme";
     const LINK: &'static str = "https://login.example.test/claude/authorize?state=dev-slot";
 
-    /// Signed in: the signed-out marker removed.
-    pub(crate) fn signed_in(marker: &Path) -> Result<(), AgentError> {
-        match std::fs::remove_file(marker) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(AgentError::Stdio(error)),
-        }
-    }
-
     /// Whether `arguments` (the daemon's, for `claude`) ask for `auth`.
     pub fn asked(arguments: &[String]) -> bool {
         arguments.first().is_some_and(|first| first == "auth")
     }
 
     pub fn run(data_dir: &Path, arguments: &[String]) -> Result<(), AgentError> {
-        let marker = data_dir.join("claude-signed-out");
+        let marker = SignedOut::of(data_dir, "claude");
         let mut out = std::io::stdout().lock();
         match arguments.get(1).map(String::as_str) {
             Some("status") => {
-                let signed_in = !marker.exists();
+                let signed_in = !marker.signed_out();
                 let status = serde_json::json!({
                     "loggedIn": signed_in,
                     "authMethod": if signed_in { "claude.ai" } else { "none" },
@@ -68,10 +85,10 @@ impl FakeClaudeAuth {
                 if code.trim() != Self::CODE {
                     return Err(AgentError::LoginRefused);
                 }
-                Self::signed_in(&marker)?;
+                marker.sign_in()?;
                 writeln!(out, "Login successful.").map_err(AgentError::Stdio)
             }
-            Some("logout") => std::fs::write(&marker, b"").map_err(AgentError::Stdio),
+            Some("logout") => marker.sign_out(),
             Some(_) | None => Err(AgentError::NoSession),
         }
     }
@@ -92,11 +109,11 @@ impl FakeCodexAuth {
     }
 
     pub fn run(data_dir: &Path, arguments: &[String]) -> Result<(), AgentError> {
-        let marker = data_dir.join("codex-signed-out");
+        let marker = SignedOut::of(data_dir, "codex");
         let mut err = std::io::stderr().lock();
         match arguments.get(1).map(String::as_str) {
             Some("status") => {
-                if !marker.exists() {
+                if !marker.signed_out() {
                     writeln!(err, "Logged in using ChatGPT").map_err(AgentError::Stdio)
                 } else {
                     writeln!(err, "Not logged in").map_err(AgentError::Stdio)?;
@@ -114,10 +131,10 @@ impl FakeCodexAuth {
                 .and_then(|()| out.flush())
                 .map_err(AgentError::Stdio)?;
                 std::thread::sleep(Self::APPROVED_AFTER);
-                FakeClaudeAuth::signed_in(&marker)?;
+                marker.sign_in()?;
                 writeln!(out, "Successfully logged in").map_err(AgentError::Stdio)
             }
-            Some("logout") => std::fs::write(&marker, b"").map_err(AgentError::Stdio),
+            Some("logout") => marker.sign_out(),
             Some(_) | None => Err(AgentError::NoSession),
         }
     }
@@ -136,12 +153,12 @@ impl FakePiAuth {
     }
 
     pub fn run(data_dir: &Path, arguments: &[String]) -> Result<(), AgentError> {
-        let marker = data_dir.join("pi-signed-out");
+        let marker = SignedOut::of(data_dir, "pi");
         let mut out = std::io::stdout().lock();
         let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
         match words.as_slice() {
             ["auth", "check", "--provider", provider, ..] => {
-                let ready = *provider == "openai-codex" && !marker.exists();
+                let ready = *provider == "openai-codex" && !marker.signed_out();
                 let status = if ready {
                     serde_json::json!({ "status": "ready", "provider": provider, "authType": "oauth" })
                 } else {
@@ -163,7 +180,7 @@ impl FakePiAuth {
                 .and_then(|()| out.flush())
                 .map_err(AgentError::Stdio)?;
                 std::thread::sleep(FakeCodexAuth::APPROVED_AFTER);
-                FakeClaudeAuth::signed_in(&marker)?;
+                marker.sign_in()?;
                 writeln!(out, "Logged in to ChatGPT.\r").map_err(AgentError::Stdio)
             }
             ["auth", "login", provider, "--api-key"] => {
@@ -175,10 +192,10 @@ impl FakePiAuth {
                     .lock()
                     .read_line(&mut key)
                     .map_err(AgentError::Stdio)?;
-                FakeClaudeAuth::signed_in(&marker)?;
+                marker.sign_in()?;
                 writeln!(out, "\r\nSaved API key for {provider}.\r").map_err(AgentError::Stdio)
             }
-            ["auth", "logout", ..] => std::fs::write(&marker, b"").map_err(AgentError::Stdio),
+            ["auth", "logout", ..] => marker.sign_out(),
             _ => Err(AgentError::NoSession),
         }
     }
@@ -198,11 +215,11 @@ impl FakeOpenCodeAuth {
     }
 
     pub fn run(data_dir: &Path, arguments: &[String]) -> Result<(), AgentError> {
-        let marker = data_dir.join("opencode-signed-out");
+        let marker = SignedOut::of(data_dir, "opencode");
         let mut out = std::io::stdout().lock();
         let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
         match words.as_slice() {
-            ["auth", "list", ..] => if marker.exists() {
+            ["auth", "list", ..] => if marker.signed_out() {
                 writeln!(out, "No authenticated integrations")
             } else {
                 writeln!(out, "OpenAI  ChatGPT   stored")
@@ -239,7 +256,7 @@ impl FakeOpenCodeAuth {
                 if !approved {
                     return Err(AgentError::LoginRefused);
                 }
-                FakeClaudeAuth::signed_in(&marker)?;
+                marker.sign_in()?;
                 writeln!(out, "◇  Connected to OpenAI\n└  Done").map_err(AgentError::Stdio)
             }
             ["auth", "login", provider, .., "key"] => {
@@ -251,11 +268,11 @@ impl FakeOpenCodeAuth {
                     .lock()
                     .read_line(&mut key)
                     .map_err(AgentError::Stdio)?;
-                FakeClaudeAuth::signed_in(&marker)?;
+                marker.sign_in()?;
                 writeln!(out, "\r\n◇  Connected to {provider}\r\n└  Done\r")
                     .map_err(AgentError::Stdio)
             }
-            ["auth", "logout", ..] => std::fs::write(&marker, b"").map_err(AgentError::Stdio),
+            ["auth", "logout", ..] => marker.sign_out(),
             _ => Err(AgentError::NoSession),
         }
     }

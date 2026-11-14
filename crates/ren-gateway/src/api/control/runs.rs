@@ -239,8 +239,8 @@ impl RunsApi {
                 post(Self::start_sign_in),
             )
             .route(
-                "/control/v1/runs/clients/{harness}/sign-in/code",
-                post(Self::sign_in_code),
+                "/control/v1/runs/clients/{harness}/sign-in/answer",
+                post(Self::answer_sign_in),
             )
             .route(
                 "/control/v1/runs/clients/{harness}/sign-in/check",
