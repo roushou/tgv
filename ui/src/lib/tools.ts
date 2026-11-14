@@ -213,45 +213,56 @@ export class Standings {
 }
 
 /**
- * What a new run gets for a package: Ren's install, first on its PATH (over
- * any copy the daemon's PATH has), the daemon's PATH's copy, or nothing.
+ * Where a new run's copy of a package comes from: Ren's install, first on
+ * its PATH (over any copy the daemon's PATH has), the daemon's PATH, or
+ * nowhere.
  */
 export type Supply =
-  | { kind: 'ren'; version: Version; shadows: SystemTool | null }
-  | { kind: 'path'; system: SystemTool }
+  | { kind: 'managed'; version: Version; shadows: SystemTool | null }
+  | { kind: 'system'; system: SystemTool }
   | { kind: 'none' };
+
+/** How many packages stand each way, for the view's header. */
+export interface Tally {
+  managed: number;
+  system: number;
+  /** Packages a client needs that runs would not find. */
+  missing: number;
+  /** Ren installs that are not the catalog's release. */
+  updates: number;
+}
 
 export class Supplies {
   static of(pkg: ToolPackage): Supply {
     if (pkg.installed !== null) {
-      return { kind: 'ren', version: pkg.installed.version, shadows: pkg.system };
+      return { kind: 'managed', version: pkg.installed.version, shadows: pkg.system };
     }
-    if (pkg.system !== null) return { kind: 'path', system: pkg.system };
+    if (pkg.system !== null) return { kind: 'system', system: pkg.system };
     return { kind: 'none' };
   }
 
-  /**
-   * The row's dot: Ren's install, the PATH's copy, nothing, or nothing
-   * where a client needs it.
-   */
-  static tone(pkg: ToolPackage): 'ren' | 'path' | 'none' | 'lacking' {
+  /** The row's dot; `missing` is nothing where a client needs it. */
+  static tone(pkg: ToolPackage): 'managed' | 'system' | 'none' | 'missing' {
     const supply = Supplies.of(pkg);
     switch (supply.kind) {
-      case 'ren':
-      case 'path':
+      case 'managed':
+      case 'system':
         return supply.kind;
       case 'none':
-        return pkg.needed_by.length > 0 ? 'lacking' : 'none';
+        return pkg.needed_by.length > 0 ? 'missing' : 'none';
       default:
         return assertNever(supply);
     }
   }
 
-  /** What new runs get from Ren, in listing order. */
-  static fromRen(listing: ToolListing): { id: PackageId; version: Version }[] {
-    return listing.packages.flatMap((p) =>
-      p.installed === null ? [] : [{ id: p.id, version: p.installed.version }],
-    );
+  static tally(listing: ToolListing): Tally {
+    const tally: Tally = { managed: 0, system: 0, missing: 0, updates: 0 };
+    for (const pkg of listing.packages) {
+      const tone = Supplies.tone(pkg);
+      if (tone !== 'none') tally[tone] += 1;
+      if (Standings.of(pkg).kind === 'outdated') tally.updates += 1;
+    }
+    return tally;
   }
 }
 
@@ -267,6 +278,31 @@ export class Platforms {
         return 'macOS arm64';
       default:
         return platform;
+    }
+  }
+}
+
+/** The one change a row's button stages, with the version it brings. */
+export type RowAction =
+  { kind: 'install'; version: Version } | { kind: 'update'; version: Version } | { kind: 'remove' };
+
+export class RowActions {
+  /** What `pkg`'s button does; `null` for a package Ren does not install. */
+  static of(pkg: ToolPackage): RowAction | null {
+    const standing = Standings.of(pkg);
+    switch (standing.kind) {
+      case 'available':
+        return { kind: 'install', version: standing.release };
+      case 'outdated':
+        return { kind: 'update', version: standing.release };
+      case 'installed':
+      case 'uncatalogued':
+        return { kind: 'remove' };
+      case 'system':
+      case 'missing':
+        return null;
+      default:
+        return assertNever(standing);
     }
   }
 }

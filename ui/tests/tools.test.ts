@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   Platforms,
+  RowActions,
   Standings,
   Supplies,
   ToolGroups,
@@ -241,30 +242,42 @@ test('changes and collections post their bodies; refusals read as sentences', as
   assert.equal(ToolsError.describe(418, null, null), 'The request was refused (418).');
 });
 
-test('what runs get: Ren’s install over the PATH’s copy, else the PATH’s, else none', async () => {
+test('where runs get each package, and the header tally', async () => {
   const read = await listing();
   const [claude, node, jq, fd, git, , acme] = read.packages;
   assert.ok(claude && node && jq && fd && git && acme);
   assert.deepEqual(Supplies.of(claude), {
-    kind: 'path',
+    kind: 'system',
     system: { path: '/opt/acme/bin/claude', version: '2.1.0', unread: null },
   });
-  assert.deepEqual(Supplies.of(node), { kind: 'ren', version: '24.1.0', shadows: null });
+  assert.deepEqual(Supplies.of(node), { kind: 'managed', version: '24.1.0', shadows: null });
   assert.deepEqual(Supplies.of(jq), {
-    kind: 'ren',
+    kind: 'managed',
     version: '1.8.2',
     shadows: { path: '/usr/bin/jq', version: null, unread: 'jq built by acme' },
   });
   assert.deepEqual(Supplies.of(fd), { kind: 'none' });
   assert.deepEqual(
     [claude, node, fd, git].map((p) => Supplies.tone(p)),
-    ['path', 'ren', 'none', 'none'],
+    ['system', 'managed', 'none', 'none'],
   );
-  assert.equal(Supplies.tone({ ...fd, needed_by: ['pi'] }), 'lacking');
-  assert.deepEqual(Supplies.fromRen(read), [
-    { id: 'node', version: '24.1.0' },
-    { id: 'jq', version: '1.8.2' },
-    { id: 'acme-lint', version: '0.3.0' },
-  ]);
+  assert.equal(Supplies.tone({ ...fd, needed_by: ['pi'] }), 'missing');
+  assert.deepEqual(Supplies.tally(read), { managed: 3, system: 1, missing: 0, updates: 1 });
   assert.equal(Platforms.label('linux_x64'), 'Linux x64');
+});
+
+test('each row stages one change, named with the version it brings', async () => {
+  const read = await listing();
+  assert.deepEqual(
+    read.packages.map((p) => RowActions.of(p)),
+    [
+      null,
+      { kind: 'update', version: '26.13.1' },
+      { kind: 'remove' },
+      { kind: 'install', version: '10.5.2' },
+      null,
+      null,
+      { kind: 'remove' },
+    ],
+  );
 });
