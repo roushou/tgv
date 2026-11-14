@@ -14,6 +14,7 @@
 mod history;
 mod runs;
 mod sessions;
+mod sign_in;
 mod tools;
 
 use crate::control::{ControlError, Controls, RunningCall};

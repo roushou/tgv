@@ -7,29 +7,35 @@
 //! work is [`Workdir`] (`workdir`); starting processes is the [`AgentHost`]
 //! port (`host`), which the daemon implements. Clients keep their own sign-in:
 //! the supervisor starts the official program and never handles credentials.
+//! It can run a client's own sign-in commands (`sign_in`, run by `login`):
+//! its status, and its login, whose link and code it relays.
 
 pub mod client;
 mod entries;
 pub mod files;
 pub mod host;
+mod login;
 mod models;
 pub mod project;
 #[cfg(test)]
 mod purity;
 pub mod run;
 pub mod session;
+pub mod sign_in;
 mod task;
 pub mod workdir;
 
 pub use client::{Client, ClientStatus};
 pub use files::{FileListing, FileMatch, FileQuery, FoundPath, PathKind, WalkLimits};
 pub use host::{AgentHost, AgentProcess, KillSignal, KillSwitch, RunTools};
+pub use login::SignInError;
 pub use models::ModelsError;
 pub use project::{Look, PlaceKind, Project, ProjectGit, Search};
 pub use run::{Approvals, Delivery, ProcessExit, RunCommand, RunRefused, RunState, Waiting};
 pub use session::{
     SessionAction, SessionInput, SessionPhase, SessionRefused, SessionState, Shelving,
 };
+pub use sign_in::{Login, LoginEnd, LoginOutcome, SignInState};
 pub use task::SupervisorTask;
 pub use workdir::{Bounds, Roots, Workdir, WorkdirError};
 
@@ -42,6 +48,7 @@ use ren_harness::{
     lines::LineLimit,
     models::Model,
     settings::RunSettings,
+    sign_in::{SignInCode, SignInMethod},
 };
 use ren_protocol::native::NativeThreadId;
 use ren_recorder::{
@@ -347,6 +354,29 @@ pub(crate) enum Request {
         request: SessionRequest,
         reply: oneshot::Sender<Result<SessionAnswer, SessionError>>,
     },
+    SignIn(SignInRequest),
+}
+
+/// A request about a client's sign-in, answered by the task's loop.
+pub(crate) enum SignInRequest {
+    Check {
+        harness: Harness,
+        reply: login::CheckReply,
+    },
+    Start {
+        harness: Harness,
+        method: SignInMethod,
+        reply: oneshot::Sender<Result<tokio::sync::watch::Receiver<Login>, SignInError>>,
+    },
+    Code {
+        harness: Harness,
+        code: SignInCode,
+        reply: login::OutcomeReply,
+    },
+    Cancel {
+        harness: Harness,
+        reply: oneshot::Sender<Result<(), SignInError>>,
+    },
 }
 
 impl Supervisor {
@@ -354,6 +384,9 @@ impl Supervisor {
     const QUEUE: usize = 64;
     /// Updates a slow subscriber may fall behind by before it lags.
     const UPDATES: usize = 1024;
+    /// How long starting a sign-in waits for the client's link: under the
+    /// UI proxy's 30 seconds.
+    pub const LINK_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
     /// A supervisor and the task that runs it. Roots are resolved by `host`
     /// now, so a link cannot change what they cover later. Every run is
@@ -462,7 +495,8 @@ impl Supervisor {
         answer.await.map_err(|_| Gone)
     }
 
-    /// Every client, and whether a run can start with it here.
+    /// Every client, whether a run can start with it here, and its sign-in.
+    /// Waits for sign-in checks running now, each bounded.
     pub async fn clients(&self) -> Result<Vec<Client>, Gone> {
         let (reply, answer) = oneshot::channel();
         self.requests
@@ -481,6 +515,74 @@ impl Supervisor {
             .await
             .map_err(|_| ModelsError::Gone)?;
         answer.await.map_err(|_| ModelsError::Gone)?
+    }
+
+    async fn sign_in_request<T>(
+        &self,
+        request: impl FnOnce(oneshot::Sender<Result<T, SignInError>>) -> SignInRequest,
+    ) -> Result<T, SignInError> {
+        let (reply, answer) = oneshot::channel();
+        self.requests
+            .send(Request::SignIn(request(reply)))
+            .await
+            .map_err(|_| SignInError::Gone)?;
+        answer.await.map_err(|_| SignInError::Gone)?
+    }
+
+    /// Check `harness`'s sign-in now with its own status command.
+    pub async fn check_sign_in(&self, harness: Harness) -> Result<SignInState, SignInError> {
+        self.sign_in_request(|reply| SignInRequest::Check { harness, reply })
+            .await
+    }
+
+    /// Start `harness`'s own login with `method`, replacing any running
+    /// one. Answers once it prints its link, or with how it stands after
+    /// [`Self::LINK_WAIT`].
+    pub async fn sign_in(
+        &self,
+        harness: Harness,
+        method: SignInMethod,
+    ) -> Result<Login, SignInError> {
+        let mut login = self
+            .sign_in_request(|reply| SignInRequest::Start {
+                harness,
+                method,
+                reply,
+            })
+            .await?;
+        let shown = tokio::time::timeout(
+            Self::LINK_WAIT,
+            login.wait_for(|state| !matches!(state, Login::Starting { .. })),
+        )
+        .await
+        .map(|shown| shown.map(|state| state.clone()));
+        Ok(match shown {
+            Ok(Ok(state)) => state,
+            // The login ended and its state went with it: it was replaced.
+            Ok(Err(_)) => Login::Ended(LoginEnd::Cancelled),
+            Err(_) => login.borrow().clone(),
+        })
+    }
+
+    /// Hand the code the sign-in page showed to `harness`'s login. Answers
+    /// once the login has ended and the client's sign-in was checked.
+    pub async fn sign_in_code(
+        &self,
+        harness: Harness,
+        code: SignInCode,
+    ) -> Result<LoginOutcome, SignInError> {
+        self.sign_in_request(|reply| SignInRequest::Code {
+            harness,
+            code,
+            reply,
+        })
+        .await
+    }
+
+    /// Cancel `harness`'s running login.
+    pub async fn cancel_sign_in(&self, harness: Harness) -> Result<(), SignInError> {
+        self.sign_in_request(|reply| SignInRequest::Cancel { harness, reply })
+            .await
     }
 
     async fn session(&self, request: SessionRequest) -> Result<SessionAnswer, SessionError> {

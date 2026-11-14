@@ -56,6 +56,16 @@ pub trait AgentHost: Send + Sync + 'static {
         workdir: &Workdir,
         tools: &RunTools,
     ) -> io::Result<AgentProcess>;
+
+    /// Start `plan`, one of a client's own short commands (its login), as
+    /// [`Self::spawn`] does, but with its stdout and stderr read together
+    /// as the process's `stdout`, so what it says on either is read.
+    fn spawn_with_stderr(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess>;
 }
 
 /// The tools a process starts with, as the host read them when it started.

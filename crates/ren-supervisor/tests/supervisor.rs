@@ -210,6 +210,15 @@ impl AgentHost for FakeHost {
             kill,
         })
     }
+
+    fn spawn_with_stderr(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        self.spawn(plan, workdir, tools)
+    }
 }
 
 async fn send(out: &mut DuplexStream, message: Value) {

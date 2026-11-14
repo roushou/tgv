@@ -1,6 +1,7 @@
 //! Runs under `/control/v1/runs`: the client processes serving sessions,
 //! listed live and followed as server-sent events, and what a session can
-//! start with (the projects, the clients, and each client's models). A run
+//! start with (the projects, the clients, and each client's models), with
+//! each client's sign-in (`sign_in`). A run
 //! is driven through its session (`sessions`), whose routes share the
 //! requests and refusals here. Access is the control API's; with no run
 //! roots configured, every route answers `runs_disabled`.
@@ -18,7 +19,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::get,
+    routing::{get, post},
 };
 use http::{HeaderMap, StatusCode};
 use ren_harness::{
@@ -233,11 +234,27 @@ impl RunsApi {
                 "/control/v1/runs/clients/{harness}/models",
                 get(Self::models),
             )
+            .route(
+                "/control/v1/runs/clients/{harness}/sign-in",
+                post(Self::start_sign_in),
+            )
+            .route(
+                "/control/v1/runs/clients/{harness}/sign-in/code",
+                post(Self::sign_in_code),
+            )
+            .route(
+                "/control/v1/runs/clients/{harness}/sign-in/check",
+                post(Self::check_sign_in),
+            )
+            .route(
+                "/control/v1/runs/clients/{harness}/sign-in/cancel",
+                post(Self::cancel_sign_in),
+            )
             .with_state(Arc::new(self))
     }
 
     /// The supervisor, once the request is authorized.
-    fn admit(&self, headers: &HeaderMap) -> Result<&Supervisor, Denied> {
+    pub(super) fn admit(&self, headers: &HeaderMap) -> Result<&Supervisor, Denied> {
         self.control.authorize(headers).map_err(Denied::Control)?;
         self.supervisor
             .as_ref()

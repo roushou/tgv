@@ -6,9 +6,11 @@
 //! Codex, [`claude`] for Claude Code, [`pi`] for Pi, [`opencode`] for
 //! OpenCode) and sends each turn's
 //! model call through the dev gateway to the fake provider, as the client
-//! would, so the run's traffic is recorded under its session. It never reads
-//! a real client's configuration or credentials.
+//! would, so the run's traffic is recorded under its session. The fake
+//! `claude` also answers `claude auth` ([`auth`]), for the sign-in sheet. It
+//! never reads a real client's configuration or credentials.
 
+mod auth;
 mod claude;
 mod opencode;
 mod pi;
@@ -36,7 +38,11 @@ pub enum AgentError {
     Stdio(#[source] std::io::Error),
     #[error(transparent)]
     Seed(#[from] super::seed::SeedError),
+    #[error("Login failed: That code wasn't accepted. The dev slot's code is `acme`.")]
+    LoginRefused,
 }
+
+pub use auth::FakeClaudeAuth;
 
 /// The client a fake agent plays.
 #[derive(Debug, Clone, Copy, ValueEnum)]

@@ -1,6 +1,9 @@
 //! A scripted agent host: each "process" is an in-memory Codex app server
 //! that opens a thread, asks one file-change approval per turn, and finishes
-//! the turn once it is answered. No real client, network, or credentials.
+//! the turn once it is answered; or, for Claude Code's own `auth` commands,
+//! a scripted status (always signed out) and login (a link, then a code:
+//! `good` exits 0, anything else fails as Claude Code does). No real client,
+//! network, or credentials.
 
 use ren_harness::launch::LaunchPlan;
 use ren_supervisor::{
@@ -74,7 +77,7 @@ impl AgentHost for ScriptedHost {
 
     fn spawn(
         &self,
-        _plan: &LaunchPlan,
+        plan: &LaunchPlan,
         _workdir: &Workdir,
         _tools: &RunTools,
     ) -> io::Result<AgentProcess> {
@@ -82,7 +85,15 @@ impl AgentHost for ScriptedHost {
         let (agent_out, stdout) = tokio::io::duplex(64 * 1024);
         let (exit_tx, exit_rx) = oneshot::channel();
         let (kill, signal) = KillSwitch::pair();
-        tokio::spawn(serve(agent_in, agent_out, signal, exit_tx));
+        let arguments: Vec<String> = plan
+            .command(None, &[])
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        match arguments.first().map(String::as_str) {
+            Some("auth") => tokio::spawn(auth(arguments, agent_in, agent_out, signal, exit_tx)),
+            _ => tokio::spawn(serve(agent_in, agent_out, signal, exit_tx)),
+        };
         Ok(AgentProcess {
             stdin: Box::new(stdin),
             stdout: Box::new(stdout),
@@ -90,6 +101,59 @@ impl AgentHost for ScriptedHost {
             kill,
         })
     }
+
+    fn spawn_with_stderr(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        // Scripted processes write everything to the one stream.
+        self.spawn(plan, workdir, tools)
+    }
+}
+
+/// Claude Code's `auth status --json` (signed out) or `auth login`.
+async fn auth(
+    arguments: Vec<String>,
+    input: DuplexStream,
+    mut out: DuplexStream,
+    kill: KillSignal,
+    exit: oneshot::Sender<ProcessExit>,
+) {
+    let script = async {
+        if arguments.get(1).map(String::as_str) == Some("status") {
+            out.write_all(br#"{"loggedIn": false, "authMethod": "none"}"#)
+                .await
+                .unwrap();
+            return ProcessExit::Code(1);
+        }
+        out.write_all(
+            b"Opening browser to sign in\nIf the browser didn't open, visit: https://login.example.test/authorize?state=acme\nPaste code here if prompted > ",
+        )
+        .await
+        .unwrap();
+        let mut lines = BufReader::new(input).lines();
+        match lines.next_line().await {
+            Ok(Some(code)) if code == "good" => {
+                out.write_all(b"Login successful.\n").await.unwrap();
+                ProcessExit::Code(0)
+            }
+            Ok(Some(_)) => {
+                out.write_all(b"Login failed: That code wasn't accepted.\n")
+                    .await
+                    .unwrap();
+                ProcessExit::Code(1)
+            }
+            Ok(None) | Err(_) => ProcessExit::Code(1),
+        }
+    };
+    let status = tokio::select! {
+        status = script => status,
+        () = kill.fired() => ProcessExit::Signal(9),
+    };
+    drop(out);
+    let _ = exit.send(status);
 }
 
 async fn send(out: &mut DuplexStream, message: Value) {

@@ -10,11 +10,12 @@
 //! [`Supervisor`]: crate::Supervisor
 
 use crate::entries::Entries;
+use crate::login::{SignInError, SignIns, StatusCheck};
 use crate::models::{Listings, ModelProbe, ModelsError, ModelsReply};
 use crate::{
     CommandError, Conversation, Create, IdleStop, Places, Request, RunSnapshot, RunUpdate,
-    SessionAnswer, SessionError, SessionRequest, SessionSeed, SessionSnapshot, Start, StartError,
-    StartPlace, Warmup,
+    SessionAnswer, SessionError, SessionRequest, SessionSeed, SessionSnapshot, SignInRequest,
+    Start, StartError, StartPlace, Warmup,
     client::{Client, ClientStatus},
     files::FileListing,
     host::{AgentHost, AgentProcess, KillSwitch},
@@ -30,7 +31,7 @@ use futures_util::{
 };
 use ren_harness::{
     Harness,
-    drive::{DriveEvent, Driver, Opening, Prompt},
+    drive::{DriveEvent, Driver, Opening, Prompt, TurnEnd},
     endpoint::GatewayEndpoint,
     lines::{Framed, Line, LineLimit, Lines},
     models::{DefaultChoice, ModelId, ModelListing},
@@ -50,7 +51,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, oneshot},
 };
 
 /// Runs every run's I/O. Returned by [`Supervisor::new`](crate::Supervisor::new).
@@ -172,8 +173,14 @@ impl<H: AgentHost> SupervisorTask<H> {
     pub async fn run(mut self) {
         let mut served = Served::default();
         let mut listings = Listings::default();
+        let mut sign_ins = SignIns::default();
+        // Who asked for the clients while sign-in checks were running.
+        let mut clients_waiting: Vec<oneshot::Sender<Vec<Client>>> = Vec::new();
         match self.warmup {
-            Warmup::AtStart => self.warm(&mut listings),
+            Warmup::AtStart => {
+                self.warm(&mut listings);
+                self.check_unchecked(&mut sign_ins);
+            }
             Warmup::WhenAsked => {}
         }
         let mut accepting = true;
@@ -181,6 +188,15 @@ impl<H: AgentHost> SupervisorTask<H> {
             tokio::select! {
                 request = self.requests.recv(), if accepting => match request {
                     Some(Request::Models { harness, reply }) => self.models(harness, reply, &mut listings),
+                    Some(Request::Clients { reply }) => {
+                        self.check_unchecked(&mut sign_ins);
+                        if sign_ins.checking() {
+                            clients_waiting.push(reply);
+                        } else {
+                            let _ = reply.send(self.clients(&sign_ins));
+                        }
+                    }
+                    Some(Request::SignIn(request)) => self.sign_in(request, &mut sign_ins),
                     Some(request) => self.request(request, &mut served).await,
                     None => {
                         accepting = false;
@@ -192,8 +208,15 @@ impl<H: AgentHost> SupervisorTask<H> {
                 Some((run, frames)) = served.outputs.next(), if !served.outputs.is_empty() => {
                     if let Some(live) = served.runs.get_mut(&run) {
                         let mut held = served.sessions.get_mut(&live.session);
+                        let mut failed = false;
                         for frame in frames {
-                            self.frame(run, live, held.as_deref_mut(), frame).await;
+                            failed |= self.frame(run, live, held.as_deref_mut(), frame).await;
+                        }
+                        // A failed turn may be a sign-in that ran out:
+                        // read the client's sign-in again.
+                        if failed {
+                            let harness = live.harness;
+                            sign_ins.check(harness, None, || self.status_check(harness));
                         }
                     }
                 }
@@ -206,6 +229,27 @@ impl<H: AgentHost> SupervisorTask<H> {
                         served.defaults.insert(harness, listed.id.clone());
                     }
                     listings.finish(harness, outcome);
+                }
+                Some((harness, state)) = sign_ins.checks.next(), if !sign_ins.checks.is_empty() => {
+                    sign_ins.checked(harness, state);
+                    if !sign_ins.checking() {
+                        let clients = self.clients(&sign_ins);
+                        for reply in clients_waiting.drain(..) {
+                            let _ = reply.send(clients.clone());
+                        }
+                    }
+                }
+                Some((harness, attempt, end)) = sign_ins.talks.next(), if !sign_ins.talks.is_empty() => {
+                    tracing::debug!(%harness, ?end, "a client's sign-in ended");
+                    if sign_ins.talked(harness, attempt, end) {
+                        let mut unstarted = None;
+                        sign_ins.check(harness, None, || {
+                            self.status_check(harness).inspect_err(|error| unstarted = Some(error.clone()))
+                        });
+                        if let Some(error) = unstarted {
+                            sign_ins.unchecked(harness, &error);
+                        }
+                    }
                 }
                 Some((run, rested)) = served.idles.next(), if !served.idles.is_empty() => {
                     if let Some(live) = served.runs.get_mut(&run)
@@ -284,20 +328,13 @@ impl<H: AgentHost> SupervisorTask<H> {
                 });
             }
             Request::Clients { reply } => {
-                let clients = Harness::ALL
-                    .iter()
-                    .map(|harness| Client {
-                        harness: *harness,
-                        status: match harness.driven_program() {
-                            Ok(program) if self.host.finds(program) => ClientStatus::Ready,
-                            Ok(_) => ClientStatus::NotInstalled,
-                            Err(_) => ClientStatus::NotDrivable,
-                        },
-                        approvals: ApprovalPolicy::offered(*harness).to_vec(),
-                        midway: Midway::offered(*harness).to_vec(),
-                    })
-                    .collect();
-                let _ = reply.send(clients);
+                // Answered by the loop, which holds the sign-ins.
+                drop(reply);
+                tracing::debug!("a clients request reached the run handler");
+            }
+            Request::SignIn(_) => {
+                // Answered by the loop, which holds the sign-ins.
+                tracing::debug!("a sign-in request reached the run handler");
             }
             Request::Models { harness, reply } => {
                 // Answered by the loop, which holds the listings.
@@ -906,13 +943,121 @@ impl<H: AgentHost> SupervisorTask<H> {
         Ok(())
     }
 
+    /// Whether `harness`'s program is on this host's path.
+    fn installed(&self, harness: Harness) -> bool {
+        harness
+            .driven_program()
+            .is_ok_and(|program| self.host.finds(program))
+    }
+
+    /// Every client as this host has it, with its sign-in as last read.
+    fn clients(&self, sign_ins: &SignIns) -> Vec<Client> {
+        Harness::ALL
+            .iter()
+            .map(|harness| Client {
+                harness: *harness,
+                status: match harness.driven_program() {
+                    Ok(program) if self.host.finds(program) => ClientStatus::Ready,
+                    Ok(_) => ClientStatus::NotInstalled,
+                    Err(_) => ClientStatus::NotDrivable,
+                },
+                approvals: ApprovalPolicy::offered(*harness).to_vec(),
+                midway: Midway::offered(*harness).to_vec(),
+                sign_in: sign_ins.state(*harness),
+                sign_in_methods: harness.sign_in_methods().to_vec(),
+            })
+            .collect()
+    }
+
+    /// Check the sign-in of each installed client that offers a status
+    /// command and has not been checked.
+    fn check_unchecked(&self, sign_ins: &mut SignIns) {
+        for harness in Harness::ALL {
+            let unchecked = matches!(
+                sign_ins.state(*harness),
+                crate::sign_in::SignInState::NotChecked
+            );
+            if unchecked && harness.sign_in_status().is_some() && self.installed(*harness) {
+                sign_ins.check(*harness, None, || self.status_check(*harness));
+            }
+        }
+    }
+
+    /// The first root, where a client's own short commands run.
+    fn root_workdir(&self) -> Result<Workdir, SignInError> {
+        let root = self
+            .bounds
+            .roots()
+            .iter()
+            .next()
+            .ok_or(SignInError::NoRoot)?;
+        Workdir::confirm(&self.bounds, root.to_path_buf()).map_err(|_| SignInError::NoRoot)
+    }
+
+    /// Start `harness`'s status command, read when it ends.
+    fn status_check(
+        &self,
+        harness: Harness,
+    ) -> Result<BoxFuture<'static, crate::sign_in::SignInState>, SignInError> {
+        let plan = harness
+            .sign_in_status()
+            .ok_or(ren_harness::sign_in::SignInRefused::NotOffered(harness))?;
+        if !self.installed(harness) {
+            return Err(SignInError::NotInstalled(harness));
+        }
+        let process = self
+            .host
+            .spawn(&plan, &self.root_workdir()?, &self.host.tools())
+            .map_err(|error| {
+                tracing::debug!(%harness, %error, "cannot start a client's status command");
+                SignInError::Spawn
+            })?;
+        Ok(StatusCheck::run(harness, process).boxed())
+    }
+
+    /// Carry out a sign-in request.
+    fn sign_in(&self, request: SignInRequest, sign_ins: &mut SignIns) {
+        match request {
+            SignInRequest::Check { harness, reply } => {
+                sign_ins.check(harness, Some(reply), || self.status_check(harness));
+            }
+            SignInRequest::Start {
+                harness,
+                method,
+                reply,
+            } => {
+                let started = harness
+                    .sign_in(method)
+                    .map_err(SignInError::from)
+                    .and_then(|plan| {
+                        if !self.installed(harness) {
+                            return Err(SignInError::NotInstalled(harness));
+                        }
+                        self.host
+                            .spawn_with_stderr(&plan, &self.root_workdir()?, &self.host.tools())
+                            .map_err(|error| {
+                                tracing::debug!(%harness, %error, "cannot start a client's login");
+                                SignInError::Spawn
+                            })
+                    })
+                    .map(|process| sign_ins.login(harness, process, self.line_limit));
+                let _ = reply.send(started);
+            }
+            SignInRequest::Code {
+                harness,
+                code,
+                reply,
+            } => sign_ins.code(harness, code, reply),
+            SignInRequest::Cancel { harness, reply } => {
+                let _ = reply.send(sign_ins.cancel(harness));
+            }
+        }
+    }
+
     /// List the models of every client installed here, with no one waiting.
     fn warm(&self, listings: &mut Listings) {
         for harness in Harness::ALL {
-            let installed = harness
-                .driven_program()
-                .is_ok_and(|program| self.host.finds(program));
-            if !installed {
+            if !self.installed(*harness) {
                 continue;
             }
             match self.probe(*harness) {
@@ -1015,15 +1160,23 @@ impl<H: AgentHost> SupervisorTask<H> {
         Ok(())
     }
 
-    async fn frame(&self, run: RunId, live: &mut Live, held: Option<&mut Held>, frame: Framed) {
+    /// Read one frame of a run's output. Whether a turn failed in it.
+    async fn frame(
+        &self,
+        run: RunId,
+        live: &mut Live,
+        held: Option<&mut Held>,
+        frame: Framed,
+    ) -> bool {
         let Some(codec) = live.codec.as_mut() else {
-            return;
+            return false;
         };
         let received = codec.receive(frame);
         for reply in &received.replies {
             Self::write(run, live, reply).await;
         }
         let mut held = held;
+        let mut failed = false;
         for event in received.events {
             if let Some(held) = held.as_deref_mut() {
                 match &event {
@@ -1050,6 +1203,13 @@ impl<H: AgentHost> SupervisorTask<H> {
                     tap.entry(turn, entry);
                 }
             }
+            failed |= matches!(
+                event,
+                DriveEvent::TurnEnded {
+                    end: TurnEnd::Failed { .. },
+                    ..
+                }
+            );
             self.publish(RunUpdate::Event {
                 run,
                 event: event.clone(),
@@ -1063,6 +1223,7 @@ impl<H: AgentHost> SupervisorTask<H> {
                 tracing::debug!(%run, %error, "the first prompt was refused");
             }
         }
+        failed
     }
 
     /// Apply an event that is not the operator's. Refusals here mean the run

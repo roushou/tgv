@@ -215,7 +215,9 @@ the Chat Completions wire, which has no provider route of its own. See
 
 Ren does not sign in, refresh tokens, or substitute an API credential, except an
 operator-key upstream's own key. The client owns authentication. No requests are
-made to providers merely by starting Ren.
+made to providers merely by starting Ren. For the sessions Ren drives, the web
+UI can run a client's own login on the daemon's host
+([Signing Claude Code in](#signing-claude-code-in)).
 
 ## Claude Code
 
@@ -244,6 +246,18 @@ The key passes through to DeepSeek untouched; Ren never holds it. Calls are
 recorded with provider `deepseek`. DeepSeek documents only Messages there, so
 Ren routes only `POST /deepseek/v1/messages`: Claude Code's token counting and
 model listing get `404` from Ren.
+
+### Signing Claude Code in
+
+Sessions run Claude Code on the daemon's host under that host's sign-in. When
+it is signed out, the Sessions view says so above the composer and in the
+client picker, with **Sign in**. That runs `claude auth login` on the
+daemon's host: choose a Claude subscription or an Anthropic Console account,
+open the link it printed (on any device), approve, and paste the code the page
+shows. Claude Code reads the code, stores its own sign-in, and refreshes it;
+Ren only passes the link and the code through, and records neither. Ren then
+runs `claude auth status` to confirm. The same works on a VPS with no browser.
+Through the API: [Client sign-in](api.md#client-sign-in).
 
 ## Chat Completions clients
 

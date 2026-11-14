@@ -203,12 +203,16 @@ async fn a_session_is_started_prompted_approved_and_stopped_through_the_control_
         clients["clients"],
         json!([
             { "harness": "claude_code", "status": "ready", "approvals": ["ask", "edits", "auto"],
-              "midway": ["model", "approvals"] },
+              "midway": ["model", "approvals"], "sign_in": { "kind": "signed_out" },
+              "sign_in_methods": ["claude_subscription", "anthropic_console"] },
             { "harness": "codex", "status": "ready", "approvals": ["ask", "edits", "auto"],
-              "midway": ["steer", "model", "effort", "approvals"] },
-            { "harness": "pi", "status": "ready", "approvals": [], "midway": ["steer", "model", "effort"] },
+              "midway": ["steer", "model", "effort", "approvals"],
+              "sign_in": { "kind": "not_checked" }, "sign_in_methods": [] },
+            { "harness": "pi", "status": "ready", "approvals": [], "midway": ["steer", "model", "effort"],
+              "sign_in": { "kind": "not_checked" }, "sign_in_methods": [] },
             { "harness": "opencode", "status": "ready", "approvals": ["ask", "edits"],
-              "midway": ["steer", "model", "effort"] },
+              "midway": ["steer", "model", "effort"], "sign_in": { "kind": "not_checked" },
+              "sign_in_methods": [] },
         ])
     );
 
@@ -946,4 +950,89 @@ async fn a_session_is_created_driven_continued_archived_and_served_again_after_a
         .until_session(&session, |s| s["stored"]["archived_at"].is_null())
         .await;
     gateway.stop().await;
+}
+
+#[tokio::test]
+async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api() {
+    let upstream = mock(Router::new()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = TestGateway::with_runs(
+        &config(&upstream),
+        dir.path(),
+        vec![PathBuf::from("/work")],
+        ScriptedHost,
+    )
+    .await;
+    let control = Control::new(&gateway);
+    let sign_in = "/runs/clients/claude_code/sign-in";
+
+    // Nothing to cancel or hand a code to before a login runs.
+    let (status, body) = control.post(&format!("{sign_in}/cancel"), json!({})).await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("no_sign_in"))
+    );
+    let (status, body) = control
+        .post(&format!("{sign_in}/code"), json!({ "code": "good" }))
+        .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("no_sign_in"))
+    );
+
+    // Its status command, run now.
+    let (status, body) = control.post(&format!("{sign_in}/check"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sign_in"], json!({ "kind": "signed_out" }));
+
+    // The login answers with the link Claude Code printed.
+    let (status, body) = control.post(sign_in, json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["method"], "claude_subscription");
+    assert_eq!(
+        body["login"],
+        json!({ "kind": "awaiting_code", "link": "https://login.example.test/authorize?state=acme",
+                "said": "Opening browser to sign in" })
+    );
+
+    // A wrong code: the login fails and says why, and the client is still
+    // signed out as its status says. The code is never answered with.
+    let (status, body) = control
+        .post(&format!("{sign_in}/code"), json!({ "code": "bad" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["outcome"],
+        json!({
+            "end": { "end": "exited", "exit": { "kind": "code", "value": 1 },
+                     "said": "Login failed: That code wasn't accepted." },
+            "state": { "kind": "signed_out" },
+        })
+    );
+    assert!(!body.to_string().contains("\"bad\""));
+
+    // A login replaced by a newer one is cancelled; a code is refused once
+    // the login has ended; a method the client lacks is invalid.
+    let (status, _) = control
+        .post(sign_in, json!({ "method": "anthropic_console" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = control.post(&format!("{sign_in}/cancel"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = control
+        .post(&format!("{sign_in}/code"), json!({ "code": "good" }))
+        .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("no_sign_in"))
+    );
+    let (status, body) = control.post("/runs/clients/codex/sign-in", json!({})).await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("sign_in_not_offered"))
+    );
+    let (status, _) = control
+        .post(&format!("{sign_in}/code"), json!({ "code": "" }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
