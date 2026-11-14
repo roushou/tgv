@@ -194,10 +194,16 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `Requirement` (a package and a `semver` range), a program's version read
   from its own `--version` output (`version`: `ObservedVersion`, which keeps
   output it cannot read and probes that did not answer), and what a host
-  provides and whether it fits (`provision`: `Provision`, `Fit`). It reaches
-  the host only through its `ToolHost` port, which the daemon's `HostTools`
-  implements; `ren doctor` surveys the host with it. Today it only observes;
-  the plan for installing, pinned toolsets, and their UI is
+  provides and whether it fits (`provision`: `Provision`, `Fit`). For
+  installing, it has where a package comes from (`source`: `Source`, a
+  `Release` with an `Artifact` per `Platform` pinned by `Sha256`), immutable
+  installs gathered into numbered generations (`toolset`: `Install`,
+  `Toolset`, `Generation`, and the `Plan` from one generation to the next),
+  and the pure `InstallJob` machine (`job`). It reaches the host only
+  through its `ToolHost` port, which the daemon's `HostTools` implements;
+  `ren doctor` surveys the host with it. Nothing installs yet: the shell
+  that carries out jobs and switches generations is planned, with the
+  pinned toolsets of runs and their UI, in
   `docs/plans/dependencies.md`, where deviations from it are recorded. Its
   manifest allows only pure dependencies, and `src/purity.rs` keeps its
   sources free of I/O.

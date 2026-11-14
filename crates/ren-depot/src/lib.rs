@@ -7,8 +7,11 @@
 //! observes the host's search path; installing packages is planned
 //! (docs/plans/dependencies.md).
 
+pub mod job;
 pub mod package;
 pub mod provision;
+pub mod source;
+pub mod toolset;
 pub mod version;
 
 #[cfg(test)]
@@ -60,6 +63,12 @@ impl Depot {
                 Package::versioned(PackageId::FD, Kind::Utility, "fd"),
             ],
         }
+    }
+
+    /// A depot with this catalog.
+    #[cfg(test)]
+    pub(crate) fn of(catalog: Vec<Package>) -> Self {
+        Self { catalog }
     }
 
     /// Every package, in catalog order.

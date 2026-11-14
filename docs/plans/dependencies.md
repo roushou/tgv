@@ -34,20 +34,37 @@ below says whether it is built. Record every deviation here, with its reason.
   `System` with its path and version, which keeps output it cannot read) and
   whether it fits (`Fit`: fits, outside, unverified, missing). Built. Phase 2
   adds `Managed(Install)`.
-- `Source`: a closed enum: `Release { url, checksums }`, `Embedded` (inside
-  the `ren` binary, as the Pi extension is), `Build { repo, rev, recipe }`
-  for Ren's own packages, and `System`, adopted rather than installed.
-- `Lock`: each requirement resolved to an exact version and digest per
-  platform.
+- `Source`: a closed enum. Built: `System` (adopted, never installed) and
+  `Release` (a version with one `Artifact` per `Platform`: an https URL, a
+  pinned `Sha256`, an `ArchiveFormat`, and where the program is inside).
+  Planned: `Embedded` (inside the `ren` binary, as the Pi extension is) and
+  `Build { repo, rev, recipe }` for Ren's own packages, added when first used.
 - `Install`: an immutable, content-addressed folder,
-  `<data>/tools/<id>/<version>-<digest>/`.
+  `<id>/<version>-<first 16 digits of its SHA-256>` under the store. Built
+  (the type and its paths; the store on disk is not).
 - `Toolset` generation: a numbered set of installs exposed as one `bin/` of
-  links, switched atomically. A run records its generation as a call records
-  its configuration revision. Collection removes only installs no live
-  generation and no live run uses.
-- `InstallJob`: a persisted, pure state machine: resolving, fetching,
-  verifying, unpacking, activating, then `Installed`, `Failed { stage }`, or
-  `Interrupted`.
+  links (`Toolset::links`), switched atomically. `Toolset::plan` turns it
+  into what the operator wants as a `Plan` (add, replace, remove, and the
+  artifacts to fetch), and `Plan::apply` makes the next generation, refusing
+  a plan made from an older one. `Toolset::collectable` lists installs no
+  live generation holds. Built as pure types; switching on disk, and a run
+  recording its generation as a call records its configuration revision, are
+  not.
+- `InstallJob`: a pure state machine: fetching, unpacking (after
+  verification), placing, then `Installed`, `Failed { stage, failure }`, or
+  `Interrupted { stage }`; an illegal step is a typed error. Built; the shell
+  that carries out its actions is not.
+
+## Deviations
+
+- **No separate `Lock`.** The catalog pins one exact release per package for
+  each Ren version, so a toolset's installs already are the resolved,
+  digest-pinned versions. `Requirement` ranges are checked against adopted
+  system tools (`Fit`).
+- **`ClientStatus` keeps its presence check** (`AgentHost::finds`) instead of
+  coming from `Provision`. Reading versions runs each client, which would
+  stall the supervisor's task on every clients request. Once runs get a
+  toolset's `bin` on their search path, presence covers managed tools too.
 
 ## Phases
 
@@ -56,10 +73,11 @@ below says whether it is built. Record every deviation here, with its reason.
    `ren doctor` reports every package with its version. Not yet: the
    supervisor's `ClientStatus` still checks presence only
    (`AgentHost::finds`), and `ProcessHost` still reads `PATH` itself.
-2. **Store and generations.** Not built. The `Fetch` and `DepotHost` ports
-   (implemented in `ren-daemon`), the store layout, `Lock`, generations, and
-   collection; runs record their generation (a `ren-store` migration);
-   `ClientStatus` and the clients listing come from `Provision`.
+2. **Store and generations.** The pure core is built (`source`, `toolset`,
+   `job`). Not built: the shell in `ren-daemon` that fetches, verifies,
+   unpacks, places, and switches generations on disk, where generations are
+   kept, a run's search path from its generation, and runs recording their
+   generation (a `ren-store` migration).
 3. **Catalog sources.** Not built. Release entries for node, bun, jq, fd,
    and ripgrep with pinned checksums per platform.
 4. **Control API and CLI.** Not built. `/control/v1/tools` (plan, apply,

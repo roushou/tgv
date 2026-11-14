@@ -53,8 +53,15 @@ macro_rules! table {
 
 #[test]
 fn every_label_is_pinned() {
-    use ren_depot::{package, provision};
-    let table = table![package::Kind, provision::Fit];
+    use ren_depot::{job, package, provision, source};
+    let table = table![
+        package::Kind,
+        provision::Fit,
+        source::Platform,
+        source::ArchiveFormat,
+        job::Stage,
+        job::HostFailure,
+    ];
     let pinned = include_str!("fixtures/labels.txt");
     assert!(
         table == pinned,

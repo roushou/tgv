@@ -1,6 +1,7 @@
 //! What a package is: its identity, the program it provides, and how its
 //! version is read. A requirement names a package and the versions that fit.
 
+use crate::source::Source;
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::{borrow::Cow, fmt, str::FromStr};
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
@@ -127,6 +128,7 @@ pub struct Package {
     kind: Kind,
     program: ProgramName,
     version_args: &'static [&'static str],
+    source: Source,
 }
 
 impl Package {
@@ -137,7 +139,18 @@ impl Package {
             kind,
             program: ProgramName::known(program),
             version_args: &["--version"],
+            source: Source::System,
         }
+    }
+
+    /// This package, from `source` instead.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the catalog gains releases in phase 3")
+    )]
+    pub(crate) fn sourced(mut self, source: Source) -> Self {
+        self.source = source;
+        self
     }
 
     pub fn id(&self) -> &PackageId {
@@ -150,6 +163,10 @@ impl Package {
 
     pub fn program(&self) -> &ProgramName {
         &self.program
+    }
+
+    pub fn source(&self) -> &Source {
+        &self.source
     }
 
     /// The arguments that make the program print its version.
