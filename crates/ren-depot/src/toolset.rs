@@ -18,7 +18,7 @@ use std::{
 
 /// One package's release, unpacked into a folder of its own that never
 /// changes: `<id>/<version>-<first 16 digits of its SHA-256>`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Install {
     pub package: PackageId,
     pub version: semver::Version,
@@ -244,16 +244,13 @@ impl Toolset {
         })
     }
 
-    /// Of `stored`, the installs no toolset in `live` holds: the current
-    /// generation and every generation a live run started with.
-    pub fn collectable<'a>(stored: &'a [Install], live: &[&Toolset]) -> Vec<&'a Install> {
-        stored
-            .iter()
-            .filter(|install| {
-                !live
-                    .iter()
-                    .any(|toolset| toolset.install(&install.package) == Some(*install))
-            })
+    /// The install folders the toolsets in `live` hold: the current
+    /// generation and every generation a live run started with. Collection
+    /// keeps these and removes every other folder in the store.
+    pub fn retained(live: &[&Toolset]) -> BTreeSet<RelativePath> {
+        live.iter()
+            .flat_map(|toolset| toolset.installs())
+            .map(Install::dir)
             .collect()
     }
 }
@@ -304,7 +301,7 @@ impl Plan {
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, Generation, Install, PlanError, Toolset};
+    use super::{Change, Generation, PlanError, Toolset};
     use crate::{
         Depot,
         package::{Kind, Package, PackageId},
@@ -439,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_keeps_every_install_a_live_generation_holds() {
+    fn collection_retains_every_install_a_live_generation_holds() {
         let empty = Toolset::empty();
         let one = empty
             .plan(
@@ -459,17 +456,22 @@ mod tests {
             .unwrap()
             .apply(&one)
             .unwrap();
-        let stored: Vec<Install> = one.installs().chain(two.installs()).cloned().collect();
-        // A run still uses generation 1: nothing goes.
-        assert!(Toolset::collectable(&stored, &[&two, &one]).is_empty());
-        // Once it ends, generation 1's node and jq go.
-        let gone: Vec<String> = Toolset::collectable(&stored, &[&two])
-            .iter()
-            .map(|install| install.dir().to_string())
-            .collect();
+        let dirs = |live: &[&Toolset]| -> Vec<String> {
+            Toolset::retained(live)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        // A run still uses generation 1: its node and jq stay.
         assert_eq!(
-            gone,
-            ["jq/1.7.1-bbbbbbbbbbbbbbbb", "node/22.17.1-aaaaaaaaaaaaaaaa"]
+            dirs(&[&two, &one]),
+            [
+                "jq/1.7.1-bbbbbbbbbbbbbbbb",
+                "node/22.17.1-aaaaaaaaaaaaaaaa",
+                "node/24.1.0-cccccccccccccccc"
+            ]
         );
+        // Once it ends, only generation 2's node stays.
+        assert_eq!(dirs(&[&two]), ["node/24.1.0-cccccccccccccccc"]);
     }
 }

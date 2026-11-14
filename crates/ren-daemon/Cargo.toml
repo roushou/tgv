@@ -12,6 +12,7 @@ description = "Configuration, resource wiring, and lifecycle of the Ren LLM gate
 # clock and random IDs and the daemon's task spawns; HTTP handling belongs to
 # ren-gateway (docs/architecture.md).
 [dependencies]
+flate2.workspace = true
 ignore = "0.4.25"
 ren-depot.workspace = true
 ren-gateway.workspace = true
@@ -20,14 +21,17 @@ ren-protocol.workspace = true
 ren-recorder.workspace = true
 ren-store.workspace = true
 ren-supervisor.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tar = "0.4.46"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "macros", "net", "process", "rt", "sync", "time"] }
 toml.workspace = true
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
+zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 axum.workspace = true
@@ -37,7 +41,6 @@ futures-util.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
-reqwest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite.workspace = true

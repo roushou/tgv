@@ -65,9 +65,8 @@ impl Depot {
         }
     }
 
-    /// A depot with this catalog.
-    #[cfg(test)]
-    pub(crate) fn of(catalog: Vec<Package>) -> Self {
+    /// A depot with this catalog instead of the built-in one.
+    pub fn of(catalog: Vec<Package>) -> Self {
         Self { catalog }
     }
 

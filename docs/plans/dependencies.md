@@ -61,6 +61,13 @@ below says whether it is built. Record every deviation here, with its reason.
   each Ren version, so a toolset's installs already are the resolved,
   digest-pinned versions. `Requirement` ranges are checked against adopted
   system tools (`Fit`).
+- **No tar.xz.** Every release planned so far (node, bun, jq, fd, ripgrep)
+  is published as tar.gz, zip, or a bare binary, so `ArchiveFormat` has those
+  three; tar.xz is added when a source needs it.
+- **`Fetch` is a seam inside the daemon, not a port in the depot.** The
+  depot's job only names the URL to fetch and takes the digest the shell
+  computed, so it needs no download capability; the daemon's store is the
+  only consumer, and tests substitute it there.
 - **`ClientStatus` keeps its presence check** (`AgentHost::finds`) instead of
   coming from `Provision`. Reading versions runs each client, which would
   stall the supervisor's task on every clients request. Once runs get a
@@ -73,11 +80,12 @@ below says whether it is built. Record every deviation here, with its reason.
    `ren doctor` reports every package with its version. Not yet: the
    supervisor's `ClientStatus` still checks presence only
    (`AgentHost::finds`), and `ProcessHost` still reads `PATH` itself.
-2. **Store and generations.** The pure core is built (`source`, `toolset`,
-   `job`). Not built: the shell in `ren-daemon` that fetches, verifies,
-   unpacks, places, and switches generations on disk, where generations are
-   kept, a run's search path from its generation, and runs recording their
-   generation (a `ren-store` migration).
+2. **Store and generations.** Built: the pure core (`source`, `toolset`,
+   `job`) and the daemon's `tools::ToolStore`, which carries out install jobs
+   (download through `Fetch`, verify, unpack, place) and activates, restores,
+   and collects generations under `<data>/tools`. Not built: a run's search
+   path from its generation, and runs recording their generation (a
+   `ren-store` migration); nothing calls the store yet.
 3. **Catalog sources.** Not built. Release entries for node, bun, jq, fd,
    and ripgrep with pinned checksums per platform.
 4. **Control API and CLI.** Not built. `/control/v1/tools` (plan, apply,

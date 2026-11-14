@@ -12,7 +12,7 @@ description = "The tools Ren's agents run with, for the Ren LLM gateway: the pac
 # through the `ToolHost` port, which the daemon implements. Never add an async
 # runtime, HTTP client, database driver, or CLI parser.
 [dependencies]
-semver = "1.0.28"
+semver = { version = "1.0.28", features = ["serde"] }
 serde.workspace = true
 serde_with.workspace = true
 strum.workspace = true

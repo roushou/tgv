@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod host;
+pub mod tools;
 
 use crate::config::RuntimeConfig;
 use crate::host::{ObservationThread, ProcessHost, RandomIds, SystemClock};

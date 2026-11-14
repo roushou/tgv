@@ -201,9 +201,10 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `Toolset`, `Generation`, and the `Plan` from one generation to the next),
   and the pure `InstallJob` machine (`job`). It reaches the host only
   through its `ToolHost` port, which the daemon's `HostTools` implements;
-  `ren doctor` surveys the host with it. Nothing installs yet: the shell
-  that carries out jobs and switches generations is planned, with the
-  pinned toolsets of runs and their UI, in
+  `ren doctor` surveys the host with it. The daemon's `tools` module carries
+  out its jobs and generations, but nothing triggers an install yet: the
+  catalog's releases, the control API and CLI, runs' pinned toolsets, and
+  the UI are planned in
   `docs/plans/dependencies.md`, where deviations from it are recorded. Its
   manifest allows only pure dependencies, and `src/purity.rs` keeps its
   sources free of I/O.
@@ -383,7 +384,14 @@ dependencies under "Crates" below. Read the code for current module ownership.
   coordinates HTTP shutdown before capture drain. It defines no
   HTTP routes or handlers and has no production Axum dependency. `config` turns
   `Config` into a `RuntimeConfig`. `host` holds `SystemClock`, `RandomIds`,
-  `ObservationThread`, and `ProcessHost`, the supervisor's `AgentHost`.
+  `ObservationThread`, `ProcessHost`, the supervisor's `AgentHost`, and
+  `HostTools`, the depot's `ToolHost`. `tools` is the tool store on disk
+  (`ToolStore`, under `<data>/tools`): it carries out the depot's
+  `InstallJob`s (downloading through its `Fetch` seam, `ReqwestFetch` in
+  production, https only and capped in bytes; unpacking tar.gz, zip, and
+  bare releases, refusing entries that reach outside their folder), and
+  activates, restores, and collects toolset generations with renames of
+  finished folders and links. Nothing calls it yet.
   Its integration tests hold `TestGateway` (`tests/support`) and the gateway,
   WebSocket, decision, and full-daemon tests; they use the gateway's complete
   router with test capabilities.

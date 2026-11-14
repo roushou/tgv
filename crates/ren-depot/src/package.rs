@@ -143,12 +143,20 @@ impl Package {
         }
     }
 
+    /// A package outside the built-in catalog, whose version is printed by
+    /// `program --version`.
+    pub fn new(id: PackageId, kind: Kind, program: ProgramName, source: Source) -> Self {
+        Self {
+            id,
+            kind,
+            program,
+            version_args: &["--version"],
+            source,
+        }
+    }
+
     /// This package, from `source` instead.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the catalog gains releases in phase 3")
-    )]
-    pub(crate) fn sourced(mut self, source: Source) -> Self {
+    pub fn sourced(mut self, source: Source) -> Self {
         self.source = source;
         self
     }

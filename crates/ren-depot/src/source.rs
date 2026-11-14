@@ -34,7 +34,6 @@ impl Platform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SerializeDisplay, DeserializeFromStr)]
 pub enum ArchiveFormat {
     TarGz,
-    TarXz,
     Zip,
     /// The download is the program itself.
     Bare,
