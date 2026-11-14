@@ -21,6 +21,7 @@
     Compose,
     Setup,
     type RunClient,
+    type Drivable,
     type RunProject,
     type HistoryChange,
     type Read,
@@ -45,6 +46,8 @@
   import ActionMenu, { type ActionItem } from '#lib/ActionMenu.svelte';
   import { assertNever } from '#lib/decode.ts';
   import NewSession from './NewSession.svelte';
+  import SignInSheet from '#lib/SignInSheet.svelte';
+  import { SignIns } from '#lib/signIn.ts';
   import RunSettingsBar from './RunSettingsBar.svelte';
   import SessionList from './SessionList.svelte';
   import type { PageProps } from './$types';
@@ -132,6 +135,8 @@
   let offered = $state.raw<RunProject[]>(first(initial?.places, null)?.projects ?? []);
   /** The clients a run can start with, and whether each is ready. */
   let clients = $state.raw<RunClient[]>(first(initial?.clients, []));
+  /** The client whose sign-in sheet is open. */
+  let signingIn = $state<Drivable | null>(null);
   const tabs = [
     ['conversation', 'Conversation'],
     ['activity', 'Activity'],
@@ -1127,6 +1132,20 @@
             >
           </div>
         {/if}
+        {#if client_ && SignIns.signedOut(client_.sign_in) && Runs.drivable(current.harness)}
+          <div class="signed-out" role="status">
+            <span
+              >{harnessLabel(current.harness)} is signed out on the daemon’s host, so a prompt would fail.</span
+            >
+            {#if client_.sign_in_methods.length > 0}
+              <button
+                class="button small"
+                type="button"
+                onclick={() => (signingIn = Runs.drivable(current.harness))}>Sign in</button
+              >
+            {/if}
+          </div>
+        {/if}
         <form
           class="composer"
           onsubmit={(event) => {
@@ -1211,6 +1230,10 @@
                           (entry) => entry.harness === harness && entry.status === 'ready',
                         ),
                       ),
+                      hint: (harness) => {
+                        const entry = clients.find((offered) => offered.harness === harness);
+                        return entry ? SignIns.hint(entry.sign_in) : null;
+                      },
                       onclient: (harness) => {
                         remember(Memory.chose(remembered, harness));
                         if (chosen)
@@ -1247,6 +1270,21 @@
     {/if}
   </section>
 </div>
+{#if signingIn}
+  {@const harness = signingIn}
+  <SignInSheet
+    {harness}
+    client={harnessLabel(harness)}
+    methods={clients.find((entry) => entry.harness === harness)?.sign_in_methods ?? []}
+    start={(method) => client.startSignIn(harness, method)}
+    code={(code) => client.signInCode(harness, code)}
+    cancel={() => client.cancelSignIn(harness)}
+    onclose={() => {
+      signingIn = null;
+      void readClients();
+    }}
+  />
+{/if}
 
 <style>
   .runs-page {
@@ -1601,6 +1639,20 @@
     display: flex;
     gap: 6px;
     margin-left: auto;
+  }
+  /* The session's client is signed out: said above the composer. */
+  .signed-out {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 16px;
+    border-top: 1px solid var(--warning-border);
+    background: var(--warning-soft);
+    color: var(--warning);
+    font-size: 12px;
+  }
+  .signed-out span {
+    flex: 1;
   }
   /* The prompt queued for after the turn, ruled off above the composer. */
   .queued {

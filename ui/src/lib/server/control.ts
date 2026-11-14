@@ -95,6 +95,17 @@ const routes: { pattern: RegExp; route: Route }[] = [
     pattern: /^\/control\/runs\/clients\/(claude_code|codex|pi|opencode)\/models$/,
     route: { method: 'GET', feed: false },
   },
+  // A client's sign-in: its login started, its code handed over, checked, or
+  // cancelled. Each waits on the client, under the daemon's own limits.
+  {
+    pattern: /^\/control\/runs\/clients\/(claude_code|codex|pi|opencode)\/sign-in$/,
+    route: { method: 'POST', feed: false, timeout: 30_000 },
+  },
+  {
+    pattern:
+      /^\/control\/runs\/clients\/(claude_code|codex|pi|opencode)\/sign-in\/(code|check|cancel)$/,
+    route: { method: 'POST', feed: false, timeout: 30_000 },
+  },
   // Sessions: their listing and feed, one session, and what it is offered.
   {
     pattern: /^\/control\/sessions$/,

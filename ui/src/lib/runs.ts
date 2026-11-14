@@ -13,6 +13,17 @@ import {
   type UnixMillis,
 } from './api.ts';
 import {
+  checkedSignIn,
+  finishedSignIn,
+  signInMethod,
+  signInState,
+  startedSignIn,
+  type Login,
+  type LoginOutcome,
+  type SignInMethod,
+  type SignInState,
+} from './signIn.ts';
+import {
   Uuid,
   array,
   assertNever,
@@ -582,6 +593,10 @@ export interface RunClient {
   approvals: Stored<ApprovalPolicy>[];
   /** What a running conversation takes mid-run. */
   midway: Stored<Midway>[];
+  /** Its sign-in on the daemon's host, as its status command last said. */
+  sign_in: SignInState;
+  /** How Ren can sign it in, first the usual way; none where it cannot. */
+  sign_in_methods: Stored<SignInMethod>[];
 }
 
 const runClients = versioned(
@@ -592,6 +607,10 @@ const runClients = versioned(
         status: label(clientStatuses),
         approvals: array(label(APPROVAL_POLICIES)),
         midway: array(label(MIDWAY)),
+        sign_in: (value, path) =>
+          value === undefined ? { kind: 'not_checked' } : signInState(value, path),
+        sign_in_methods: (value, path) =>
+          value === undefined ? [] : array(signInMethod)(value, path),
       }),
     ),
   }),
@@ -847,6 +866,26 @@ export class RunsClient {
   async clients(signal?: AbortSignal): Promise<RunClient[]> {
     return (await this.#send('GET', '/control/runs/clients', undefined, runClients, signal))
       .clients;
+  }
+  /** Check `harness`'s sign-in now, with its own status command. */
+  async checkSignIn(harness: Drivable): Promise<SignInState> {
+    const path = `/control/runs/clients/${harness}/sign-in/check`;
+    return (await this.#send('POST', path, {}, checkedSignIn, undefined, 25_000)).sign_in;
+  }
+  /** Start `harness`'s own login; answers once it shows its link. */
+  async startSignIn(harness: Drivable, method: SignInMethod): Promise<Login> {
+    const path = `/control/runs/clients/${harness}/sign-in`;
+    return (await this.#send('POST', path, { method }, startedSignIn, undefined, 28_000)).login;
+  }
+  /** Hand the page's code to `harness`'s login; answers once it ended and was checked. */
+  async signInCode(harness: Drivable, code: string): Promise<LoginOutcome> {
+    const path = `/control/runs/clients/${harness}/sign-in/code`;
+    return (await this.#send('POST', path, { code }, finishedSignIn, undefined, 28_000)).outcome;
+  }
+  /** Stop `harness`'s running login. */
+  async cancelSignIn(harness: Drivable): Promise<void> {
+    const path = `/control/runs/clients/${harness}/sign-in/cancel`;
+    await this.#send('POST', path, {}, null);
   }
   /** The models `harness` offers, as it lists them on the daemon's host. */
   async models(harness: Drivable, signal?: AbortSignal): Promise<RunModel[]> {

@@ -1,0 +1,219 @@
+// A client's sign-in on the daemon's host, as the control API reports it:
+// what the client's own status command last said, and one run of its own
+// login, whose link the daemon relays and whose code it hands back. Parsed
+// here at the boundary; the wording the Sessions view shows is pure and
+// tested in tests/signIn.test.ts.
+import { versioned } from './api.ts';
+import {
+  assertNever,
+  isRecord,
+  label,
+  nullable,
+  object,
+  string,
+  unrecognised,
+  ShapeError,
+  type Decoder,
+  type Stored,
+} from './decode.ts';
+
+export const SIGN_IN_METHODS = ['claude_subscription', 'anthropic_console'] as const;
+/** Which account a client signs in with. */
+export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
+export const signInMethod = label(SIGN_IN_METHODS);
+
+/** What the daemon knows of a client's sign-in. */
+export type SignInState =
+  | { kind: 'not_checked' }
+  | { kind: 'checking' }
+  /** `method` is the client's own word for how, shown as it is. */
+  | { kind: 'signed_in'; method: string }
+  | { kind: 'signed_out' }
+  | { kind: 'unknown'; reason: string }
+  /** A state a newer daemon reports, kept as its label. */
+  | { kind: 'unrecognized'; label: string };
+
+/** The page a login asks the operator to open: always `https`. */
+export type SignInLink = string & { readonly __brand: 'SignInLink' };
+
+/** How a process exited. */
+export type ProcessExit =
+  { kind: 'code'; value: number } | { kind: 'signal'; value: number } | { kind: 'unknown' };
+
+/** How a login ended. Whether it signed the client in is the check after it. */
+export type LoginEnd =
+  | { end: 'exited'; exit: ProcessExit; said: string | null }
+  | { end: 'cancelled' }
+  | { end: 'timed_out' }
+  | { end: 'broken' }
+  | { end: 'unrecognized'; label: string };
+
+/** One run of a client's login. */
+export type Login =
+  | { kind: 'starting'; said: string | null }
+  | { kind: 'awaiting_code'; link: SignInLink; said: string | null }
+  | { kind: 'finishing'; link: SignInLink; said: string | null }
+  | { kind: 'ended'; end: LoginEnd };
+
+/** A login's end, and the client's sign-in as checked after it. */
+export interface LoginOutcome {
+  end: LoginEnd;
+  state: SignInState;
+}
+
+export const signInState: Decoder<SignInState> = (value, path) => {
+  if (!isRecord(value)) throw new ShapeError(path, 'an object');
+  const kind = string(value.kind, `${path}.kind`);
+  switch (kind) {
+    case 'not_checked':
+    case 'checking':
+    case 'signed_out':
+      return { kind };
+    case 'signed_in':
+      return { kind, method: string(value.method, `${path}.method`) };
+    case 'unknown':
+      return { kind, reason: string(value.reason, `${path}.reason`) };
+    default:
+      return { kind: 'unrecognized', label: kind };
+  }
+};
+
+const signInLink: Decoder<SignInLink> = (value, path) => {
+  const text = string(value, path);
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new ShapeError(path, 'an https link');
+  }
+  if (url.protocol !== 'https:') throw new ShapeError(path, 'an https link');
+  return text as SignInLink;
+};
+
+const processExit: Decoder<ProcessExit> = (value, path) => {
+  if (!isRecord(value)) throw new ShapeError(path, 'an object');
+  switch (value.kind) {
+    case 'code':
+    case 'signal': {
+      const number = value.value;
+      if (typeof number !== 'number' || !Number.isInteger(number))
+        throw new ShapeError(`${path}.value`, 'an integer');
+      return { kind: value.kind, value: number };
+    }
+    default:
+      return { kind: 'unknown' };
+  }
+};
+
+const loginEnd: Decoder<LoginEnd> = (value, path) => {
+  if (!isRecord(value)) throw new ShapeError(path, 'an object');
+  const end = string(value.end, `${path}.end`);
+  switch (end) {
+    case 'exited':
+      return {
+        end,
+        exit: processExit(value.exit, `${path}.exit`),
+        said: nullable(string)(value.said, `${path}.said`),
+      };
+    case 'cancelled':
+    case 'timed_out':
+    case 'broken':
+      return { end };
+    default:
+      return { end: 'unrecognized', label: end };
+  }
+};
+
+export const login: Decoder<Login> = (value, path) => {
+  if (!isRecord(value)) throw new ShapeError(path, 'an object');
+  const said = () => nullable(string)(value.said ?? null, `${path}.said`);
+  switch (value.kind) {
+    case 'starting':
+      return { kind: 'starting', said: said() };
+    case 'awaiting_code':
+    case 'finishing':
+      return { kind: value.kind, link: signInLink(value.link, `${path}.link`), said: said() };
+    case 'ended':
+      return { kind: 'ended', end: loginEnd(value, path) };
+    default:
+      throw new ShapeError(`${path}.kind`, 'a login state');
+  }
+};
+
+export const startedSignIn = versioned(
+  object<{ method: Stored<SignInMethod>; login: Login }>({ method: signInMethod, login }),
+);
+export const checkedSignIn = versioned(object<{ sign_in: SignInState }>({ sign_in: signInState }));
+export const finishedSignIn = versioned(
+  object<{ outcome: LoginOutcome }>({
+    outcome: object<LoginOutcome>({ end: loginEnd, state: signInState }),
+  }),
+);
+
+/** How the Sessions view words a client's sign-in. */
+export class SignIns {
+  /** The method's name, for the choice between them. */
+  static method(method: Stored<SignInMethod>): string {
+    switch (method) {
+      case 'claude_subscription':
+        return 'Claude subscription';
+      case 'anthropic_console':
+        return 'Anthropic Console';
+      default:
+        return unrecognised(method);
+    }
+  }
+
+  /** The short hint a client picker shows; null when there is nothing to say. */
+  static hint(state: SignInState): string | null {
+    switch (state.kind) {
+      case 'signed_in':
+        return state.method;
+      case 'signed_out':
+        return 'signed out';
+      case 'unknown':
+        return 'sign-in unknown';
+      case 'checking':
+        return 'checking sign-in';
+      case 'not_checked':
+        return null;
+      case 'unrecognized':
+        return state.label;
+      default:
+        return assertNever(state);
+    }
+  }
+
+  /** Whether the client must be signed in before a prompt can work. */
+  static signedOut(state: SignInState): boolean {
+    return state.kind === 'signed_out';
+  }
+
+  /** What a login's outcome tells the operator. */
+  static outcome(outcome: LoginOutcome, client: string): { ok: boolean; text: string } {
+    if (outcome.state.kind === 'signed_in') {
+      return { ok: true, text: `${client} is signed in (${outcome.state.method}).` };
+    }
+    const after =
+      outcome.state.kind === 'signed_out'
+        ? `${client} is still signed out.`
+        : outcome.state.kind === 'unknown'
+          ? `Whether ${client} is signed in is unknown: ${outcome.state.reason}`
+          : `${client}'s sign-in could not be confirmed.`;
+    const end = outcome.end;
+    switch (end.end) {
+      case 'exited':
+        return { ok: false, text: end.said ? `${end.said} ${after}` : after };
+      case 'cancelled':
+        return { ok: false, text: `The sign-in was cancelled. ${after}` };
+      case 'timed_out':
+        return { ok: false, text: `The sign-in took too long and was stopped. ${after}` };
+      case 'broken':
+        return { ok: false, text: `The sign-in stopped unexpectedly. ${after}` };
+      case 'unrecognized':
+        return { ok: false, text: after };
+      default:
+        return assertNever(end);
+    }
+  }
+}

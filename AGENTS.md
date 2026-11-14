@@ -236,7 +236,11 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `ApprovalPolicy`, and `Midway`, what each client takes mid-run: steering
   and which settings change from the next turn); the commands a client
   offers a prompt (`commands`: `ClientCommand`, each codec reading its
-  client's own list); the gateway URL a harness is pointed at and the
+  client's own list); a client's own sign-in commands (`sign_in`: the
+  `SignInMethod`s each offers, its status read as a `Standing`, its login
+  read by `LoginReader`, the `https` `SignInLink` it prints, and the
+  `SignInCode` handed back, a secret never shown; Claude Code's in
+  `claude_code`'s `auth`); the gateway URL a harness is pointed at and the
   `UserToken` it presents there (`endpoint`); and `HostEnv` (`host`), the
   host environment that launching and configuration read. It performs
   filesystem and process I/O but has no async runtime, HTTP, database, or
@@ -330,8 +334,16 @@ dependencies under "Crates" below. Read the code for current module ownership.
   through the recorder's `RunTap` (a run without room to be recorded does not
   start), with every event of its conversation as `entries` keeps it (no
   streamed pieces; a reply cut off kept as far as it came), and drains every
-  run when the last handle is dropped. `src/purity.rs` keeps `run`,
-  `workdir`, `project`, `entries`, `files`, and `session` free of runtime and I/O. The daemon constructs it when `[runs]`
+  run when the last handle is dropped. A client's sign-in on the host is
+  read and run through the client's own commands: `sign_in` holds the pure
+  `SignInState` and the `Login` machine (starting, awaiting its code,
+  finishing, ended), and `login` its shell (`StatusCheck`, `LoginTalk`, and
+  `SignIns`, one login per client, checked after each login and after a
+  failed turn), behind `Supervisor::check_sign_in`, `sign_in`,
+  `sign_in_code`, and `cancel_sign_in`; a login is started with
+  `AgentHost::spawn_with_stderr`, so its failure reason is read.
+  `src/purity.rs` keeps `run`, `workdir`, `project`, `entries`, `files`,
+  `session`, and `sign_in` free of runtime and I/O. The daemon constructs it when `[runs]`
   roots are configured, with `ProcessHost`; the gateway's control API serves it.
 - `crates/ren-gateway`: Ren's HTTP interface, with `Gateway` as its primary type.
   It owns forwarding, management, and control routes on one listener, assembled
@@ -380,7 +392,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
     on its first request. Its `runs` module serves `/control/v1/runs`, read only: the live runs
     of the `ren_supervisor::Supervisor` in `ManagementSetup` and their updates
     as SSE, and what a session can start with (places, clients, and models); it
-    holds the run refusals the `sessions` routes share. Its `history` module serves
+    holds the run refusals the `sessions` routes share. Its `sign_in` module
+    serves each client's sign-in under `/control/v1/runs/clients/{harness}/sign-in`
+    (start, code, check, cancel); the code goes only to the login's stdin. Its `history` module serves
     `/control/v1/history`: archiving, unarchiving, and deleting a recording or
     run, checked against the `Reader` and recorded through the recorder.
 - `crates/ren-daemon`: configuration, resource wiring, and lifecycle, with
@@ -446,6 +460,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `src/lib/tools.ts` the Tools view's pure core (each package's
   `Standing`, the `ToolPlan` staged before it is applied, and `ToolGroups`),
   whose first read the UI server makes (`src/routes/tools/+page.server.ts`),
+  `src/lib/signIn.ts` a client's sign-in as the API reports it and how the
+  view words it, with `src/lib/SignInSheet.svelte` the sheet that runs the
+  client's own login (its link out, the page's code back),
   `src/lib/mention.ts` the composer's offers (the client's commands after
   `/` or `$`, the folder's files after `@`), `src/lib/redline.ts` Redline's
   pure core (what a mark points at, the brief an agent gets, and the open
