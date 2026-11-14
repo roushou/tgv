@@ -16,6 +16,9 @@
   import { harnessLabel } from './activity.ts';
   import Markdown from './Markdown.svelte';
   import Picker, { type PickerGroup } from './Picker.svelte';
+  import SignInSheet from './SignInSheet.svelte';
+  import Icon from './Icon.svelte';
+  import { SignIns } from './signIn.ts';
   import type { Revision } from './api.ts';
   import { Redline, type Destination, type PageContext } from './redline.ts';
   import type { RedlineDesk } from './redline.svelte.ts';
@@ -193,6 +196,22 @@
         entry.harness === (destination.kind === 'new' ? harness : destination.session.harness),
     ) ?? null,
   );
+  /** That client is signed out on the daemon's host: the brief would only
+   * fail, so it is not sent until it is signed in. */
+  const signedOut = $derived(target !== null && SignIns.signedOut(target.sign_in));
+  /** Another client to send it to instead, offered, never switched to. */
+  const instead = $derived(
+    read && destination.kind === 'new' && signedOut
+      ? Redline.instead(read.ready, read.clients, harness)
+      : null,
+  );
+  /** The client whose sign-in sheet is open. */
+  let signingIn = $state<Drivable | null>(null);
+  /** A client's sign-in, as the destination menu says it. */
+  const hintOf = (drivable: Drivable) => {
+    const entry = read?.clients.find((offer) => offer.harness === drivable);
+    return entry ? (SignIns.hint(entry.sign_in) ?? undefined) : undefined;
+  };
   /** The approval policies that client runs under. */
   const policies = $derived(
     APPROVAL_POLICIES.filter((policy) => target?.approvals.includes(policy) ?? false),
@@ -244,6 +263,8 @@
   /** A running session's state, in a word, with its client. */
   const stand = (session: DeskSession) => {
     const client = harnessLabel(session.harness);
+    const entry = read?.clients.find((offer) => offer.harness === session.harness);
+    if (entry && SignIns.signedOut(entry.sign_in)) return `Signed out · ${client}`;
     const mark = Sessions.mark(session, client);
     return mark.label === client ? client : `${mark.label} · ${client}`;
   };
@@ -256,6 +277,8 @@
       options: shown.map((drivable) => ({
         value: `${NEW}${drivable}`,
         label: `New ${harnessLabel(drivable)} session`,
+        // Its sign-in under its name: the narrow chip keeps the name.
+        detail: hintOf(drivable) ?? null,
       })),
     },
     ...(offered.length && source
@@ -370,7 +393,7 @@
       error = 'Mark something and write a note first.';
       return;
     }
-    if (!source) return;
+    if (!source || signedOut) return;
     sending = true;
     try {
       const target =
@@ -456,6 +479,27 @@
       {#if desk.destinations.state === 'failed'}
         <p class="error" role="alert">{desk.destinations.reason}</p>
       {/if}
+      {#if signedOut && target}
+        <p class="signed-out" role="status">
+          <Icon name="lock" size={12} />
+          <span
+            >{harnessLabel(target.harness)} is signed out on the daemon’s host. {destination.kind ===
+            'session'
+              ? 'The brief waits here until it is signed in.'
+              : 'Sign it in to send the brief.'}</span
+          >
+          {#if instead}
+            {@const other = instead}
+            <button
+              class="link"
+              onclick={() => {
+                chosen = other;
+                picked = 'new';
+              }}>Send to {harnessLabel(other)}</button
+            >
+          {/if}
+        </p>
+      {/if}
       <!-- One row: where the brief goes, what it may do there, and Send. -->
       <div class="send">
         <span class="where">
@@ -485,12 +529,28 @@
               })}
           />
         </span>
-        <button
-          class="button primary redline-send"
-          title={action === 'Queue' ? 'Sent when its current turn ends' : null}
-          disabled={sending || !read || (destination.kind === 'new' && !ready.length)}
-          onclick={() => void send()}>{action}</button
-        >
+        {#if signedOut && target && Runs.drivable(target.harness) && target.sign_in_methods.length > 0}
+          <!-- Signed out: the one action that leads on is signing in. -->
+          <button
+            class="button primary redline-send"
+            onclick={() => (signingIn = Runs.drivable(target.harness))}
+            ><Icon name="lock" size={11} />Sign in</button
+          >
+        {:else}
+          <button
+            class="button primary redline-send"
+            title={signedOut
+              ? `${harnessLabel(target?.harness ?? harness)} is signed out`
+              : action === 'Queue'
+                ? 'Sent when its current turn ends'
+                : null}
+            disabled={sending ||
+              !read ||
+              signedOut ||
+              (destination.kind === 'new' && !ready.length)}
+            onclick={() => void send()}>{action}</button
+          >
+        {/if}
       </div>
     {:else}
       <p class="hint unset">
@@ -500,6 +560,21 @@
       </p>
     {/if}
   </footer>
+  {#if signingIn}
+    {@const signing = signingIn}
+    <SignInSheet
+      harness={signing}
+      client={harnessLabel(signing)}
+      methods={read?.clients.find((entry) => entry.harness === signing)?.sign_in_methods ?? []}
+      start={(method) => client.startSignIn(signing, method)}
+      code={(code) => client.signInCode(signing, code)}
+      cancel={() => client.cancelSignIn(signing)}
+      onclose={() => {
+        signingIn = null;
+        desk.reread();
+      }}
+    />
+  {/if}
 </aside>
 
 <style>
@@ -749,6 +824,36 @@
     margin: 0;
     color: var(--redline);
     font-size: 12px;
+  }
+  /* The destination's client is signed out: said above the send row. */
+  .signed-out {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--warning-border);
+    background: var(--warning-soft);
+    color: var(--warning);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .signed-out :global(svg) {
+    flex: none;
+    margin-top: 2px;
+  }
+  .signed-out span {
+    flex: 1;
+  }
+  .signed-out .link {
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent-text);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
   }
   .redline-send,
   .redline-send:hover:not(:disabled) {

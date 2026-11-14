@@ -91,6 +91,8 @@
 
   function key(event: KeyboardEvent) {
     if (event.metaKey || event.ctrlKey || event.altKey || typing(event.target)) return;
+    // A dialog over the page (a client's sign-in) has its own keys.
+    if (event.target instanceof Element && event.target.closest('dialog[open]')) return;
     if (event.key === 'm') {
       event.preventDefault();
       desk.toggle();

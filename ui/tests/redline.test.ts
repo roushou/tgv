@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Redline, type ElementLike, type Mark, type PageContext } from '../src/lib/redline.ts';
-import type { RunId, RunSnapshot, SessionBody, SessionId } from '../src/lib/runs.ts';
+import type { RunClient, RunId, RunSnapshot, SessionBody, SessionId } from '../src/lib/runs.ts';
 
 function element(
   tagName: string,
@@ -214,4 +214,22 @@ test("a brief's code spans fence past backticks inside, and a note's lines stay 
     mark(1, 'First line\nsecond line'),
   ]);
   assert.ok(brief.includes('1. First line\n   second line\n   - Element:'));
+});
+
+test('a signed-out client is never switched from on its own, only offered another', () => {
+  const client = (harness: RunClient['harness'], sign_in: RunClient['sign_in']): RunClient => ({
+    harness,
+    status: 'ready',
+    approvals: [],
+    midway: [],
+    sign_in,
+    sign_in_methods: [],
+  });
+  const clients = [
+    client('claude_code', { kind: 'signed_out' }),
+    client('codex', { kind: 'not_checked' }),
+    client('pi', { kind: 'signed_out' }),
+  ];
+  assert.equal(Redline.instead(['claude_code', 'pi', 'codex'], clients, 'claude_code'), 'codex');
+  assert.equal(Redline.instead(['claude_code', 'pi'], clients, 'claude_code'), null);
 });

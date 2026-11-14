@@ -495,6 +495,21 @@
 
   /** What the selected run's client takes mid-run. */
   const client_ = $derived(clients.find((entry) => entry.harness === session?.harness) ?? null);
+  /** The session's client is signed out here: a prompt would only fail, so none is sent. */
+  const signedOut = $derived(client_ !== null && SignIns.signedOut(client_.sign_in));
+  let checking = $state(false);
+  /** Read the client's sign-in again: it may have been signed in another way. */
+  async function checkSignIn(harness: Drivable) {
+    checking = true;
+    try {
+      await client.checkSignIn(harness);
+    } catch {
+      // The line stays as it is; the next read of the clients says.
+    } finally {
+      checking = false;
+    }
+    await readClients();
+  }
 
   /**
    * Send what is written to the session: it starts a turn (starting or
@@ -505,7 +520,7 @@
     const text = draft.trim();
     const target = chosen;
     const run = selected;
-    if (!target || !text || !compose) return;
+    if (!target || !text || !compose || signedOut) return;
     // Shown at once where its process runs; a new process reads it back.
     const shown = (sent: string) => {
       if (run && session && Sessions.running(session)) {
@@ -1132,22 +1147,28 @@
             >
           </div>
         {/if}
-        {#if client_ && SignIns.signedOut(client_.sign_in) && Runs.drivable(current.harness)}
+        {#if client_ && signedOut && Runs.drivable(current.harness)}
+          {@const harness = Runs.drivable(current.harness)}
           <div class="signed-out" role="status">
             <span
-              >{harnessLabel(current.harness)} is signed out on the daemon’s host, so a prompt would fail.</span
+              ><Icon name="lock" size={12} />
+              {harnessLabel(current.harness)} is signed out on the daemon’s host, so nothing can be sent.
+              Signed in some other way? Check again.</span
             >
-            {#if client_.sign_in_methods.length > 0}
+            {#if harness}
               <button
                 class="button small"
                 type="button"
-                onclick={() => (signingIn = Runs.drivable(current.harness))}>Sign in</button
+                disabled={checking}
+                onclick={() => void checkSignIn(harness)}
+                >{checking ? 'Checking…' : 'Check again'}</button
               >
             {/if}
           </div>
         {/if}
         <form
           class="composer"
+          class:locked={signedOut}
           onsubmit={(event) => {
             event.preventDefault();
             void send('queue');
@@ -1195,15 +1216,17 @@
               : undefined}
             rows="3"
             disabled={compose.kind === 'closed'}
-            placeholder={compose.kind === 'start'
-              ? `Ask ${harnessLabel(current.harness)} to do something. Enter sends, ↑ recalls an earlier prompt.`
-              : compose.kind === 'during'
-                ? compose.steer
-                  ? `Enter queues for after this turn; ${navigatorKey}+Enter sends it into the turn now.`
-                  : `Enter queues for after this turn; ${harnessLabel(current.harness)} reads it then.`
-                : compose.kind === 'continue'
-                  ? `Write to ${harnessLabel(current.harness)} to go on.`
-                  : compose.reason}
+            placeholder={signedOut
+              ? `${harnessLabel(current.harness)} is signed out. Write your prompt now; it sends once ${harnessLabel(current.harness)} is signed in.`
+              : compose.kind === 'start'
+                ? `Ask ${harnessLabel(current.harness)} to do something. Enter sends, ↑ recalls an earlier prompt.`
+                : compose.kind === 'during'
+                  ? compose.steer
+                    ? `Enter queues for after this turn; ${navigatorKey}+Enter sends it into the turn now.`
+                    : `Enter queues for after this turn; ${harnessLabel(current.harness)} reads it then.`
+                  : compose.kind === 'continue'
+                    ? `Write to ${harnessLabel(current.harness)} to go on.`
+                    : compose.reason}
             aria-label="Prompt"></textarea>
           <div class="composer-bar">
             {#if Runs.drivable(current.harness) && client_ && session}
@@ -1250,19 +1273,30 @@
               {#if compose.kind === 'during' && compose.steer}<button
                   type="button"
                   class="button"
-                  disabled={busy || !draft.trim()}
+                  disabled={busy || !draft.trim() || signedOut}
                   title="Add it to the turn that is running"
                   onclick={() => void send('steer')}>Send now</button
                 >{/if}
-              <button
-                class="button primary"
-                disabled={busy || !draft.trim() || compose.kind === 'closed'}
-                >{compose.kind === 'during'
-                  ? 'Queue'
-                  : compose.kind === 'continue'
-                    ? 'Continue'
-                    : 'Send'}</button
-              >
+              {#if signedOut && Runs.drivable(current.harness) && (client_?.sign_in_methods.length ?? 0) > 0}
+                <!-- Signed out: the one action that leads on is signing in. -->
+                <button
+                  class="button primary"
+                  type="button"
+                  onclick={() => (signingIn = Runs.drivable(current.harness))}
+                  ><Icon name="lock" size={12} />Sign in to {harnessLabel(current.harness)}</button
+                >
+              {:else}
+                <button
+                  class="button primary"
+                  disabled={busy || !draft.trim() || compose.kind === 'closed' || signedOut}
+                  title={signedOut ? `Sign ${harnessLabel(current.harness)} in to send` : null}
+                  >{compose.kind === 'during'
+                    ? 'Queue'
+                    : compose.kind === 'continue'
+                      ? 'Continue'
+                      : 'Send'}</button
+                >
+              {/if}
             </span>
           </div>
         </form>
@@ -1616,6 +1650,11 @@
   .composer:focus-within {
     box-shadow: inset 2px 0 var(--accent);
   }
+  /* Signed out: the composer's edge turns to the warning above it. */
+  .composer.locked,
+  .composer.locked:focus-within {
+    box-shadow: inset 2px 0 var(--warning);
+  }
   .composer textarea {
     min-width: 0;
     resize: vertical;
@@ -1653,6 +1692,9 @@
   }
   .signed-out span {
     flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
   /* The prompt queued for after the turn, ruled off above the composer. */
   .queued {

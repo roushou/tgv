@@ -184,6 +184,38 @@ export class SignIns {
     }
   }
 
+  /**
+   * The client a tool package is: a `client` package's entry in `clients`,
+   * matched by the harness that needs it; null for any other package.
+   */
+  static clientOf<T extends { harness: string }>(
+    pkg: { kind: string | null; needed_by: readonly string[] },
+    clients: readonly T[],
+  ): T | null {
+    if (pkg.kind !== 'client') return null;
+    return clients.find((client) => pkg.needed_by.includes(client.harness)) ?? null;
+  }
+
+  /** How a chip shows a sign-in: its words and its tone; null for none. */
+  static chip(state: SignInState): { text: string; tone: 'success' | 'warning' | '' } | null {
+    switch (state.kind) {
+      case 'signed_in':
+        return { text: state.method, tone: 'success' };
+      case 'signed_out':
+        return { text: 'signed out', tone: 'warning' };
+      case 'unknown':
+        return { text: 'sign-in unknown', tone: '' };
+      case 'checking':
+        return { text: 'checking sign-in', tone: '' };
+      case 'not_checked':
+        return null;
+      case 'unrecognized':
+        return { text: state.label, tone: '' };
+      default:
+        return assertNever(state);
+    }
+  }
+
   /** Whether the client must be signed in before a prompt can work. */
   static signedOut(state: SignInState): boolean {
     return state.kind === 'signed_out';

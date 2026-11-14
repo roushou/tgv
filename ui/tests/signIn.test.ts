@@ -107,3 +107,22 @@ test('the client starts a sign-in, hands over the code, and reads clients withou
     'POST /control/runs/clients/claude_code/sign-in/code {"code":"abc"}',
   ]);
 });
+
+test('a client package finds its client, and a chip says its sign-in', () => {
+  const clients = [
+    { harness: 'claude_code', sign_in: { kind: 'signed_out' as const } },
+    { harness: 'codex', sign_in: { kind: 'not_checked' as const } },
+  ];
+  assert.equal(
+    SignIns.clientOf({ kind: 'client', needed_by: ['claude_code'] }, clients)?.harness,
+    'claude_code',
+  );
+  // A runtime needed by a client is not that client.
+  assert.equal(SignIns.clientOf({ kind: 'runtime', needed_by: ['pi'] }, clients), null);
+  assert.deepEqual(SignIns.chip({ kind: 'signed_out' }), { text: 'signed out', tone: 'warning' });
+  assert.deepEqual(SignIns.chip({ kind: 'signed_in', method: 'claude.ai' }), {
+    text: 'claude.ai',
+    tone: 'success',
+  });
+  assert.equal(SignIns.chip({ kind: 'not_checked' }), null);
+});
