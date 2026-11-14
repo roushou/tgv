@@ -4,7 +4,9 @@
   import Icon from '#lib/Icon.svelte';
   import { harnessLabel } from '#lib/activity.ts';
   import {
+    Platforms,
     Standings,
+    Supplies,
     ToolGroups,
     ToolPlan,
     ToolsApi,
@@ -121,7 +123,22 @@
     }
   }
 
-  const tone = (pkg: ToolPackage) => Standings.of(pkg).kind;
+  const fromRen = $derived(listing ? Supplies.fromRen(listing) : []);
+
+  /** What new runs get for `pkg`, as a sentence. */
+  function gets(pkg: ToolPackage): string {
+    const supply = Supplies.of(pkg);
+    switch (supply.kind) {
+      case 'ren':
+        return `Runs get Ren’s ${supply.version}`;
+      case 'path':
+        return supply.system.version
+          ? `Runs get ${supply.system.version} from the daemon’s PATH`
+          : 'Runs get the daemon’s PATH’s copy';
+      case 'none':
+        return 'Runs get none';
+    }
+  }
   const short = (sha: string) => `${sha.slice(0, 12)}…`;
 </script>
 
@@ -129,8 +146,10 @@
   <div class="scope-group">
     {#if listing}
       <span class="muted"
-        >Generation <span class="mono">{listing.generation}</span>{listing.platform
-          ? ` · ${listing.platform}`
+        >New runs get {#if fromRen.length === 0}everything from the daemon’s PATH{:else}<span
+            class="mono">{fromRen.map((t) => `${t.id} ${t.version}`).join(', ')}</span
+          > from Ren, the rest from the daemon’s PATH{/if}{listing.platform
+          ? ` · ${Platforms.label(listing.platform)}`
           : ''}</span
       >
     {:else}
@@ -157,29 +176,28 @@
       <table class="tools-table">
         <colgroup>
           <col class="c-name" />
-          <col class="c-standing" />
-          <col class="c-version" />
           <col class="c-version" />
           <col />
+          <col class="c-release" />
           <col class="c-action" />
         </colgroup>
         <thead>
           <tr>
             <th>Package</th>
-            <th>Standing</th>
-            <th>Ren installs</th>
-            <th>Installed</th>
-            <th>On the daemon’s PATH</th>
+            <th>Runs get</th>
+            <th>From</th>
+            <th>Ren’s release</th>
             <th><span class="sr-only">Change</span></th>
           </tr>
         </thead>
         {#each groups as group (group.kind)}
           <tbody>
             <tr class="tools-group">
-              <th colspan="6" scope="rowgroup">{group.title}</th>
+              <th colspan="5" scope="rowgroup">{group.title}</th>
             </tr>
             {#each group.packages as pkg (pkg.id)}
               {@const label = action(pkg)}
+              {@const supply = Supplies.of(pkg)}
               <tr
                 class="tools-row"
                 class:selected={selected === pkg.id}
@@ -187,26 +205,43 @@
                 onclick={() => (selected = pkg.id)}
               >
                 <td class="mono">
-                  <span class="dot {tone(pkg)}" aria-hidden="true"
+                  <span class="dot {Supplies.tone(pkg)}" aria-hidden="true"
                   ></span>{pkg.id}{#if pkg.origin === 'operator'}<span
                       class="origin muted"
                       title="Added in the daemon’s configuration">configured</span
                     >{/if}
                 </td>
-                <td>{Standings.word(Standings.of(pkg))}</td>
-                <td class="mono">{pkg.release ?? '—'}</td>
-                <td class="mono">{pkg.installed?.version ?? '—'}</td>
-                <td class="mono path">
-                  {#if pkg.system}
-                    <span title={pkg.system.unread ?? pkg.system.path}
-                      >{#if pkg.system.version}{pkg.system.version}{:else}<span class="unread"
-                          >version not read</span
-                        >{/if}<span class="where muted">{pkg.system.path}</span></span
-                    >
-                  {:else}
-                    <span class="muted">not found</span>
-                  {/if}
-                </td>
+                {#if supply.kind === 'ren'}
+                  <td class="mono">{supply.version}</td>
+                  <td class="path">
+                    Ren{#if supply.shadows}<span
+                        class="where muted mono"
+                        title="Runs find Ren’s first; the daemon’s PATH also has {supply.shadows
+                          .version ?? 'a copy'} at {supply.shadows.path}"
+                        >over {supply.shadows.path}</span
+                      >{/if}
+                  </td>
+                {:else if supply.kind === 'path'}
+                  <td class="mono">
+                    {#if supply.system.version}{supply.system.version}{:else}<span
+                        class="unread"
+                        title={supply.system.unread ?? ''}>not read</span
+                      >{/if}
+                  </td>
+                  <td class="mono path muted">{supply.system.path}</td>
+                {:else}
+                  <td class:lacking={pkg.needed_by.length > 0} class="muted">none</td>
+                  <td class="muted">
+                    {pkg.needed_by.length > 0
+                      ? `${pkg.needed_by.map(harnessLabel).join(', ')} needs it`
+                      : ''}
+                  </td>
+                {/if}
+                <td class="mono"
+                  >{pkg.release ?? '—'}{#if pkg.origin === null}<span class="muted">
+                      not in the catalog</span
+                    >{/if}</td
+                >
                 <td class="end">
                   {#if label && !unsupported}
                     <button
@@ -246,17 +281,14 @@
                 >{/each}</span
             >
           {:else if applying.change.outcome === 'activated'}
-            <span
-              >Generation <span class="mono">{applying.change.generation}</span> is current.</span
-            >
+            <span>Applied. New runs get it; running ones keep what they started with.</span>
           {:else}
             <span class="muted">Nothing to change.</span>
           {/if}
         {:else if applying.kind === 'failed'}
           <span class="failed">{applying.message}</span>
         {:else}
-          <span class="muted"
-            >Stage installs, updates, and removals, then apply them as one generation.</span
+          <span class="muted">Stage installs, updates, and removals, then apply them together.</span
           >
         {/if}
         <span class="spacer"></span>
@@ -266,7 +298,7 @@
         <button
           class="button primary"
           disabled={plan.empty || applying.kind === 'applying'}
-          onclick={apply}>Apply{plan.empty ? '' : ` → generation ${listing.generation + 1}`}</button
+          onclick={apply}>Apply</button
         >
       </footer>
     </section>
@@ -275,7 +307,7 @@
         <section>
           <h2 class="mono">{chosen.id}</h2>
           <p class="muted">
-            {Standings.word(Standings.of(chosen))}{#if chosen.origin === 'operator'}
+            {gets(chosen)}{#if chosen.origin === 'operator'}
               · added in the daemon’s configuration{/if}
           </p>
         </section>
@@ -314,6 +346,9 @@
         <section>
           <h3>On the daemon’s PATH</h3>
           {#if chosen.system}
+            {#if chosen.installed}
+              <p class="muted">Runs find Ren’s install first.</p>
+            {/if}
             <dl>
               <dt>Path</dt>
               <dd class="mono">{chosen.system.path}</dd>
@@ -342,16 +377,16 @@
         </section>
       {/if}
       <section>
-        <h3>Generations</h3>
+        <h3>History</h3>
         {#if listing.generations.length === 0}
           <p class="muted">
-            None yet. Each change makes the next one; runs keep the one they started with.
+            Nothing yet. Each change is kept here; a run keeps the tools it started with.
           </p>
         {:else}
           <ul class="generations">
             {#each listing.generations as generation (generation.generation)}
               <li class={generation.state}>
-                <span class="mono">{generation.generation}</span>
+                <span class="mono">#{generation.generation}</span>
                 <span class="state"
                   >{generation.state === 'current'
                     ? 'current'
@@ -367,7 +402,7 @@
                   {#if generation.state !== 'current' && !unsupported}
                     <button
                       class="button small"
-                      title="Make a new generation that holds what generation {generation.generation} held"
+                      title="Give new runs what #{generation.generation} held"
                       disabled={applying.kind === 'applying'}
                       onclick={() => rollBack(generation.generation)}>Restore</button
                     >
@@ -426,11 +461,11 @@
   .c-name {
     width: 196px;
   }
-  .c-standing {
-    width: 104px;
-  }
   .c-version {
     width: 96px;
+  }
+  .c-release {
+    width: 112px;
   }
   .c-action {
     width: 84px;
@@ -475,7 +510,7 @@
   .path .where {
     margin-left: 8px;
   }
-  .path .unread,
+  td .unread,
   dd .unread {
     color: var(--warning);
   }
@@ -488,30 +523,26 @@
     vertical-align: 1px;
     background: var(--muted);
   }
-  .dot.installed {
+  .dot.ren {
     background: var(--success);
   }
-  .dot.outdated {
-    background: var(--live);
+  .dot.path {
+    background: var(--muted);
   }
-  .dot.available {
+  .dot.none {
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--muted);
   }
-  .dot.system {
-    background: var(--muted);
-  }
-  .dot.missing {
+  .dot.lacking {
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--error);
+  }
+  td.lacking {
+    color: var(--error);
   }
   .origin {
     margin-left: 8px;
     font-size: 11px;
-  }
-  .dot.uncatalogued {
-    background: var(--live);
-    box-shadow: inset 0 0 0 1px var(--error);
   }
   .tools-plan {
     margin-top: auto;

@@ -127,8 +127,8 @@ below says whether it is built. Record every deviation here, with its reason.
    generation holding what a kept one held, from the store; `ren tools
    which` names the program a new run finds.
 5. **Tools view.** Built (`/tools`): one flush table grouped by kind
-   (standing, Ren's release, the install, what `PATH` has, with each row's
-   one change), changes staged in a plan bar and applied as one generation,
+   (what a new run gets and where from, Ren's release, and each row's one
+   change; the header names what runs get from Ren), changes staged in a plan bar and applied as one generation,
    and an inspector with the release, its digest and folder, what `PATH`
    has, the clients that need it, and the generations kept with
    "Remove unused". Verified in the dev slot (install, removal, collection

@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  Platforms,
   Standings,
+  Supplies,
   ToolGroups,
   ToolPlan,
   ToolsApi,
@@ -144,10 +146,6 @@ test('each package has one standing', async () => {
       { kind: 'uncatalogued', installed: '0.3.0' },
     ],
   );
-  assert.equal(
-    Standings.word({ kind: 'outdated', installed: '1' as never, release: '2' as never }),
-    'Update',
-  );
 });
 
 test('packages group by kind, runtimes first, unknown kinds and uncatalogued installs last', async () => {
@@ -241,4 +239,32 @@ test('changes and collections post their bodies; refusals read as sentences', as
     'Set REN_CONTROL_TOKEN_FILE on the UI server to manage tools here.',
   );
   assert.equal(ToolsError.describe(418, null, null), 'The request was refused (418).');
+});
+
+test('what runs get: Ren’s install over the PATH’s copy, else the PATH’s, else none', async () => {
+  const read = await listing();
+  const [claude, node, jq, fd, git, , acme] = read.packages;
+  assert.ok(claude && node && jq && fd && git && acme);
+  assert.deepEqual(Supplies.of(claude), {
+    kind: 'path',
+    system: { path: '/opt/acme/bin/claude', version: '2.1.0', unread: null },
+  });
+  assert.deepEqual(Supplies.of(node), { kind: 'ren', version: '24.1.0', shadows: null });
+  assert.deepEqual(Supplies.of(jq), {
+    kind: 'ren',
+    version: '1.8.2',
+    shadows: { path: '/usr/bin/jq', version: null, unread: 'jq built by acme' },
+  });
+  assert.deepEqual(Supplies.of(fd), { kind: 'none' });
+  assert.deepEqual(
+    [claude, node, fd, git].map((p) => Supplies.tone(p)),
+    ['path', 'ren', 'none', 'none'],
+  );
+  assert.equal(Supplies.tone({ ...fd, needed_by: ['pi'] }), 'lacking');
+  assert.deepEqual(Supplies.fromRen(read), [
+    { id: 'node', version: '24.1.0' },
+    { id: 'jq', version: '1.8.2' },
+    { id: 'acme-lint', version: '0.3.0' },
+  ]);
+  assert.equal(Platforms.label('linux_x64'), 'Linux x64');
 });

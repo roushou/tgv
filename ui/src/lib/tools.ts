@@ -210,24 +210,63 @@ export class Standings {
       ? { kind: 'installed', version: pkg.release }
       : { kind: 'outdated', installed: pkg.installed.version, release: pkg.release };
   }
+}
 
-  /** A word for the standing, as the table shows it. */
-  static word(standing: Standing): string {
-    switch (standing.kind) {
-      case 'installed':
-        return 'Installed';
-      case 'outdated':
-        return 'Update';
-      case 'available':
-        return 'Not installed';
-      case 'system':
-        return 'On PATH';
-      case 'missing':
-        return 'Not found';
-      case 'uncatalogued':
-        return 'Not in catalog';
+/**
+ * What a new run gets for a package: Ren's install, first on its PATH (over
+ * any copy the daemon's PATH has), the daemon's PATH's copy, or nothing.
+ */
+export type Supply =
+  | { kind: 'ren'; version: Version; shadows: SystemTool | null }
+  | { kind: 'path'; system: SystemTool }
+  | { kind: 'none' };
+
+export class Supplies {
+  static of(pkg: ToolPackage): Supply {
+    if (pkg.installed !== null) {
+      return { kind: 'ren', version: pkg.installed.version, shadows: pkg.system };
+    }
+    if (pkg.system !== null) return { kind: 'path', system: pkg.system };
+    return { kind: 'none' };
+  }
+
+  /**
+   * The row's dot: Ren's install, the PATH's copy, nothing, or nothing
+   * where a client needs it.
+   */
+  static tone(pkg: ToolPackage): 'ren' | 'path' | 'none' | 'lacking' {
+    const supply = Supplies.of(pkg);
+    switch (supply.kind) {
+      case 'ren':
+      case 'path':
+        return supply.kind;
+      case 'none':
+        return pkg.needed_by.length > 0 ? 'lacking' : 'none';
       default:
-        return assertNever(standing);
+        return assertNever(supply);
+    }
+  }
+
+  /** What new runs get from Ren, in listing order. */
+  static fromRen(listing: ToolListing): { id: PackageId; version: Version }[] {
+    return listing.packages.flatMap((p) =>
+      p.installed === null ? [] : [{ id: p.id, version: p.installed.version }],
+    );
+  }
+}
+
+export class Platforms {
+  /** A platform as people name it. */
+  static label(platform: Stored<Platform>): string {
+    switch (platform) {
+      case 'linux_x64':
+        return 'Linux x64';
+      case 'linux_arm64':
+        return 'Linux arm64';
+      case 'macos_arm64':
+        return 'macOS arm64';
+      default:
+        return platform;
     }
   }
 }
