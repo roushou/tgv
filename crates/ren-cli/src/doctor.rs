@@ -2,10 +2,10 @@
 use crate::Cli;
 use crate::client::GatewayChoice;
 use crate::style::{Styling, Tone};
-use ren_daemon::config::Config;
+use ren_daemon::config::{Config, ToolsOptions};
 use ren_daemon::host::HostTools;
 use ren_depot::{
-    Depot, Surveyed, ToolHost,
+    Surveyed, ToolHost,
     package::{Kind, PackageId, Requirement},
     provision::{Fit, Provision},
     version::ObservedVersion,
@@ -202,7 +202,7 @@ impl Report {
                 Err(error) => report.add("local storage", Status::Failed, error.to_string()),
             }
         }
-        report.tools(&HostTools::new(env.search_path()));
+        report.tools(&config.tools, &HostTools::new(env.search_path()));
         let overrides = Self::credential_overrides(env);
         if !overrides.is_empty() {
             report.add(
@@ -310,8 +310,8 @@ impl Report {
     /// has it and which version it reported. A missing client is a warning;
     /// a missing runtime or utility is one only when a client found here
     /// needs it.
-    fn tools(&mut self, host: &impl ToolHost) {
-        let depot = match Depot::builtin() {
+    fn tools(&mut self, tools: &ToolsOptions, host: &impl ToolHost) {
+        let depot = match tools.depot() {
             Ok(depot) => depot,
             Err(error) => {
                 self.add("tool catalog", Status::Failed, error.to_string());

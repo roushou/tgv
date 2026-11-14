@@ -1,7 +1,8 @@
 # Plan: dependencies
 
 Ren manages the tools its agents run with: external ones (Node.js, Bun, jq, fd,
-and the clients themselves) and Ren's own packages. This plan is the design
+and the clients themselves), and any other published as prebuilt release
+artifacts, Ren's own crates included, through the operator's catalog entries. This plan is the design
 and the order it is built in. `ren-depot` holds the built part; each phase
 below says whether it is built. Record every deviation here, with its reason.
 
@@ -11,8 +12,9 @@ below says whether it is built. Record every deviation here, with its reason.
   Ren has to own which tools each run used, the generations it pins, and
   their record. Their registries may be read for ideas.
 - **The catalog ships with Ren.** Each release carries its built-in catalog,
-  versioned with the binary. The operator can add and override entries in
-  `ren.toml` (not built). The catalog is never fetched at runtime, which
+  versioned with the binary. The operator adds entries, and replaces
+  built-in runtimes and utilities, in the configuration's `[tools]`
+  (built). The catalog is never fetched at runtime, which
   would be a second update channel to trust.
 - **Platforms:** linux-x64, linux-arm64, and macOS arm64.
 - **Managed first.** A run's search path puts the active toolset before the
@@ -37,8 +39,8 @@ below says whether it is built. Record every deviation here, with its reason.
 - `Source`: a closed enum. Built: `System` (adopted, never installed) and
   `Release` (a version with one `Artifact` per `Platform`: an https URL, a
   pinned `Sha256`, an `ArchiveFormat`, and where the program is inside).
-  Planned: `Embedded` (inside the `ren` binary, as the Pi extension is) and
-  `Build { repo, rev, recipe }` for Ren's own packages, added when first used.
+  Ren's own packages need no other source: a crate published with prebuilt
+  release artifacts is a `Release` in the operator's catalog.
 - `Install`: an immutable, content-addressed folder,
   `<id>/<version>-<first 16 digits of its SHA-256>` under the store. Built
   (the type and its paths; the store on disk is not).
@@ -47,9 +49,8 @@ below says whether it is built. Record every deviation here, with its reason.
   into what the operator wants as a `Plan` (add, replace, remove, and the
   artifacts to fetch), and `Plan::apply` makes the next generation, refusing
   a plan made from an older one. `Toolset::collectable` lists installs no
-  live generation holds. Built as pure types; switching on disk, and a run
-  recording its generation as a call records its configuration revision, are
-  not.
+  live generation holds. Built, with the daemon's store switching
+  generations on disk and each run recording the one it started with.
 - `InstallJob`: a pure state machine: fetching, unpacking (after
   verification), placing, then `Installed`, `Failed { stage, failure }`, or
   `Interrupted { stage }`; an illegal step is a typed error. Built; the shell
@@ -89,6 +90,13 @@ below says whether it is built. Record every deviation here, with its reason.
   stall the supervisor's task on every clients request. Once runs get a
   toolset's `bin` on their search path, presence covers managed tools too.
 
+- **No `Build` or `Embedded` source.** The plan had Ren build its own
+  packages from a repository and revision. Building on each host would need
+  a Rust toolchain there, take minutes per install, and give binaries that
+  cannot be pinned by digest. Prebuilt release artifacts, pinned in an
+  operator entry, give the same result, so internal packages are catalog
+  entries like any other.
+
 ## Phases
 
 1. **Observe.** Built. `ren-depot` with the catalog, requirements, version
@@ -127,5 +135,12 @@ below says whether it is built. Record every deviation here, with its reason.
    keeping a live run's generation, and a run's agent getting the
    generation's `bin` first on its `PATH`). Not built: the runs that used
    each generation, listed beside it.
-6. **Ren's own packages and project requirements.** Not built. `Build`
-   sources, and requirements a project declares.
+6. **Operator catalog entries.** Built. `[[tools.package]]` in the
+   configuration, in `catalog.toml`'s form (`CatalogEntry`), merged by
+   `Depot::configured` when the configuration loads: an entry adds a
+   runtime or utility or replaces the built-in one of its id; a client, a
+   duplicate, or two packages providing one program is refused. Each
+   package's `origin` is listed; an install whose entry was taken out stays
+   in its generation (`Toolset::plan` keeps it) and is listed with no
+   origin until removed.
+7. **Project requirements.** Not built: requirements a project declares.

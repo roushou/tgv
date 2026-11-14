@@ -125,6 +125,33 @@ built into this Ren: Node.js, Bun, jq, fd, and ripgrep, each at one pinned
 release for Linux x64, Linux arm64, and macOS arm64. The clients themselves and
 git are only found on `PATH`, never installed.
 
+The operator adds packages in the daemon's configuration, in the built-in
+catalog's form: anything published as a prebuilt archive or binary per
+platform, such as a crate's release artifacts. An entry with a built-in
+runtime's or utility's id replaces it (to pin another Node.js release, say);
+clients stay built in, and two packages may not provide one program. The
+configuration is refused at load otherwise.
+
+```toml
+[[tools.package]]
+id = "acme-lint"
+kind = "utility" # or "runtime"
+program = "acme-lint"
+
+[tools.package.release]
+version = "0.3.0"
+
+[[tools.package.release.artifact]]
+platform = "linux_x64" # linux_arm64, macos_arm64
+url = "https://github.com/acme/acme-lint/releases/download/v0.3.0/acme-lint-x86_64-unknown-linux-gnu.tar.gz"
+sha256 = "<64 hex digits; GitHub shows each release asset's digest>"
+format = "tar_gz" # zip, bare
+program_at = "acme-lint-x86_64-unknown-linux-gnu/acme-lint"
+```
+
+Taking an entry out leaves its install in the current generation, listed as
+not in the catalog, until it is removed.
+
 ```sh
 ren tools list
 ren tools install node jq

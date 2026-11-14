@@ -117,6 +117,18 @@ pub enum Kind {
     Utility,
 }
 
+/// Which catalog a package comes from.
+#[derive(Display, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SerializeDisplay, DeserializeFromStr)]
+pub enum Origin {
+    /// The catalog built into this Ren.
+    Builtin,
+    /// The operator's configuration, which adds packages and replaces
+    /// built-in runtimes and utilities.
+    Operator,
+}
+
 /// A package the catalog knows: the program it provides and how its version
 /// is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +138,7 @@ pub struct Package {
     program: ProgramName,
     version_args: &'static [&'static str],
     source: Source,
+    origin: Origin,
 }
 
 impl Package {
@@ -137,7 +150,14 @@ impl Package {
             program,
             version_args: &["--version"],
             source,
+            origin: Origin::Builtin,
         }
+    }
+
+    /// This package, from the operator's configuration.
+    pub fn operator(mut self) -> Self {
+        self.origin = Origin::Operator;
+        self
     }
 
     /// This package, from `source` instead.
@@ -160,6 +180,10 @@ impl Package {
 
     pub fn source(&self) -> &Source {
         &self.source
+    }
+
+    pub fn origin(&self) -> Origin {
+        self.origin
     }
 
     /// The arguments that make the program print its version.

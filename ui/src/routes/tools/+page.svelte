@@ -113,6 +113,7 @@
       case 'outdated':
         return plan.add.has(pkg.id) ? 'Undo' : 'Update';
       case 'installed':
+      case 'uncatalogued':
         return plan.remove.has(pkg.id) ? 'Undo' : 'Remove';
       case 'system':
       case 'missing':
@@ -186,7 +187,11 @@
                 onclick={() => (selected = pkg.id)}
               >
                 <td class="mono">
-                  <span class="dot {tone(pkg)}" aria-hidden="true"></span>{pkg.id}
+                  <span class="dot {tone(pkg)}" aria-hidden="true"
+                  ></span>{pkg.id}{#if pkg.origin === 'operator'}<span
+                      class="origin muted"
+                      title="Added in the daemon’s configuration">configured</span
+                    >{/if}
                 </td>
                 <td>{Standings.word(Standings.of(pkg))}</td>
                 <td class="mono">{pkg.release ?? '—'}</td>
@@ -269,7 +274,10 @@
       {#if chosen}
         <section>
           <h2 class="mono">{chosen.id}</h2>
-          <p class="muted">{Standings.word(Standings.of(chosen))}</p>
+          <p class="muted">
+            {Standings.word(Standings.of(chosen))}{#if chosen.origin === 'operator'}
+              · added in the daemon’s configuration{/if}
+          </p>
         </section>
         <section>
           <h3>Ren’s release</h3>
@@ -287,6 +295,17 @@
                 <dt>Folder</dt>
                 <dd class="mono">{chosen.installed.dir}</dd>
               {/if}
+            </dl>
+          {:else if chosen.installed}
+            <p class="muted">
+              The daemon’s configuration no longer names this package. Runs keep the installed
+              release until it is removed.
+            </p>
+            <dl>
+              <dt>Installed</dt>
+              <dd class="mono">{chosen.installed.version}</dd>
+              <dt>Folder</dt>
+              <dd class="mono">{chosen.installed.dir}</dd>
             </dl>
           {:else}
             <p class="muted">Ren does not install this; it uses what the daemon’s PATH has.</p>
@@ -405,7 +424,7 @@
     font-size: 12px;
   }
   .c-name {
-    width: 132px;
+    width: 196px;
   }
   .c-standing {
     width: 104px;
@@ -484,6 +503,14 @@
   }
   .dot.missing {
     background: transparent;
+    box-shadow: inset 0 0 0 1px var(--error);
+  }
+  .origin {
+    margin-left: 8px;
+    font-size: 11px;
+  }
+  .dot.uncatalogued {
+    background: var(--live);
     box-shadow: inset 0 0 0 1px var(--error);
   }
   .tools-plan {

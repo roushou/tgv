@@ -30,6 +30,9 @@ export type Generation = Brand<number, 'Generation'>;
 
 export const KINDS = ['runtime', 'utility', 'client'] as const;
 export type Kind = (typeof KINDS)[number];
+const origins = ['builtin', 'operator'] as const;
+/** Which catalog names a package: Ren's own, or the operator's `[tools]`. */
+export type Origin = (typeof origins)[number];
 const platforms = ['linux_x64', 'linux_arm64', 'macos_arm64'] as const;
 export type Platform = (typeof platforms)[number];
 const generationStates = ['current', 'in_use', 'idle'] as const;
@@ -57,7 +60,10 @@ export interface SystemTool {
 
 export interface ToolPackage {
   id: PackageId;
-  kind: Stored<Kind>;
+  /** Which catalog names it; `null` for an install the catalog no longer names. */
+  origin: Stored<Origin> | null;
+  /** What it is for; `null` when the catalog no longer names it. */
+  kind: Stored<Kind> | null;
   /** The program it provides (`rg` for `ripgrep`). */
   program: string;
   /** The release Ren installs; `null` for a package it only finds on PATH. */
@@ -126,7 +132,8 @@ const listing: Decoder<ToolListing> = versioned(
     packages: array(
       object<ToolPackage>({
         id: packageId,
-        kind: label(KINDS),
+        origin: nullable(label(origins)),
+        kind: nullable(label(KINDS)),
         program: string,
         release: nullable(version),
         installed: nullable(object<InstalledTool>({ version, sha256: string, dir: string })),
@@ -188,10 +195,15 @@ export type Standing =
   /** Ren only finds it on PATH, and it is there. */
   | { kind: 'system' }
   /** Ren only finds it on PATH, and it is not there. */
-  | { kind: 'missing' };
+  | { kind: 'missing' }
+  /** Installed, and since taken out of the catalog: it can only be removed. */
+  | { kind: 'uncatalogued'; installed: Version };
 
 export class Standings {
   static of(pkg: ToolPackage): Standing {
+    if (pkg.origin === null && pkg.installed !== null) {
+      return { kind: 'uncatalogued', installed: pkg.installed.version };
+    }
     if (pkg.release === null) return pkg.system === null ? { kind: 'missing' } : { kind: 'system' };
     if (pkg.installed === null) return { kind: 'available', release: pkg.release };
     return pkg.installed.version === pkg.release
@@ -212,6 +224,8 @@ export class Standings {
         return 'On PATH';
       case 'missing':
         return 'Not found';
+      case 'uncatalogued':
+        return 'Not in catalog';
       default:
         return assertNever(standing);
     }
@@ -267,6 +281,7 @@ export class ToolPlan {
         flip(add);
         break;
       case 'installed':
+      case 'uncatalogued':
         flip(remove);
         break;
       case 'system':
@@ -326,9 +341,12 @@ export class ToolPlan {
   }
 }
 
-/** Packages grouped by kind, in the order the table shows them. */
+/**
+ * Packages grouped by kind, in the order the table shows them; installs the
+ * catalog no longer names (`kind` null) come last.
+ */
 export interface KindGroup {
-  kind: Stored<Kind>;
+  kind: Stored<Kind> | null;
   title: string;
   packages: ToolPackage[];
 }
@@ -336,10 +354,11 @@ export interface KindGroup {
 export class ToolGroups {
   static of(listing: ToolListing): KindGroup[] {
     const known: Stored<Kind>[] = [...KINDS];
-    const kinds = [
-      ...known,
-      ...new Set(listing.packages.map((p) => p.kind).filter((k) => !known.includes(k))),
-    ];
+    const unknown = new Set<Stored<Kind>>();
+    for (const p of listing.packages) {
+      if (p.kind !== null && !known.includes(p.kind)) unknown.add(p.kind);
+    }
+    const kinds: (Stored<Kind> | null)[] = [...known, ...unknown, null];
     return kinds
       .map((kind) => ({
         kind,
@@ -349,7 +368,8 @@ export class ToolGroups {
       .filter((group) => group.packages.length > 0);
   }
 
-  static title(kind: Stored<Kind>): string {
+  static title(kind: Stored<Kind> | null): string {
+    if (kind === null) return 'Not in the catalog';
     switch (kind) {
       case 'runtime':
         return 'Runtimes';

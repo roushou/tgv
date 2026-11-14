@@ -56,6 +56,7 @@ fn every_label_is_pinned() {
     use ren_depot::{job, package, provision, source};
     let table = table![
         package::Kind,
+        package::Origin,
         provision::Fit,
         source::Platform,
         source::ArchiveFormat,

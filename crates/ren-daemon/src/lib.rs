@@ -325,8 +325,8 @@ impl Daemon {
         )?))
     }
 
-    /// The host's tools for the control API, or none when downloads or the
-    /// catalog cannot be set up (the tools routes then say so).
+    /// The host's tools for the control API, or none when downloads cannot
+    /// be set up (the tools routes then say so).
     fn toolbox(
         config: &RuntimeConfig,
         data_dir: &std::path::Path,
@@ -335,12 +335,9 @@ impl Daemon {
         let fetch = ReqwestFetch::new()
             .inspect_err(|error| tracing::warn!(%error, "tools: cannot start downloads"))
             .ok()?;
-        let depot = ren_depot::Depot::builtin()
-            .inspect_err(|error| tracing::warn!(%error, "tools: the catalog is invalid"))
-            .ok()?;
         Some(Arc::new(HostToolbox::new(
             ToolStore::new(data_dir.join(ToolStore::FOLDER), fetch),
-            depot,
+            config.depot().clone(),
             HostTools::new(config.agent_path().to_vec()),
             HostTools::platform(),
             Some(reader.clone()),

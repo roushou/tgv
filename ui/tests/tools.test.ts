@@ -18,6 +18,7 @@ const wire = {
   packages: [
     {
       id: 'claude',
+      origin: 'builtin',
       kind: 'client',
       program: 'claude',
       release: null,
@@ -27,6 +28,7 @@ const wire = {
     },
     {
       id: 'node',
+      origin: 'builtin',
       kind: 'runtime',
       program: 'node',
       release: '26.13.1',
@@ -40,6 +42,7 @@ const wire = {
     },
     {
       id: 'jq',
+      origin: 'builtin',
       kind: 'utility',
       program: 'jq',
       release: '1.8.2',
@@ -49,6 +52,7 @@ const wire = {
     },
     {
       id: 'fd',
+      origin: 'builtin',
       kind: 'utility',
       program: 'fd',
       release: '10.5.2',
@@ -58,6 +62,7 @@ const wire = {
     },
     {
       id: 'git',
+      origin: 'builtin',
       kind: 'utility',
       program: 'git',
       release: null,
@@ -67,10 +72,25 @@ const wire = {
     },
     {
       id: 'zig',
+      origin: 'operator',
       kind: 'compiler',
       program: 'zig',
       release: null,
       installed: null,
+      system: null,
+      needed_by: [],
+    },
+    {
+      id: 'acme-lint',
+      origin: null,
+      kind: null,
+      program: 'acme-lint',
+      release: null,
+      installed: {
+        version: '0.3.0',
+        sha256: 'ef'.repeat(32),
+        dir: 'acme-lint/0.3.0-efefefefefefefef',
+      },
       system: null,
       needed_by: [],
     },
@@ -104,6 +124,8 @@ test('a listing decodes, keeping kinds this UI does not know', async () => {
   assert.equal(read.generation, 3);
   assert.equal(read.platform, 'linux_x64');
   assert.equal(read.packages[5]?.kind, 'compiler');
+  assert.equal(read.packages[5]?.origin, 'operator');
+  assert.equal(read.packages[6]?.kind, null);
   assert.equal(read.generations[1]?.state, 'in_use');
   await assert.rejects(new ToolsApi(respond(200, { ...wire, api_version: 2 })).listing());
 });
@@ -119,6 +141,7 @@ test('each package has one standing', async () => {
       { kind: 'available', release: '10.5.2' },
       { kind: 'missing' },
       { kind: 'missing' },
+      { kind: 'uncatalogued', installed: '0.3.0' },
     ],
   );
   assert.equal(
@@ -127,7 +150,7 @@ test('each package has one standing', async () => {
   );
 });
 
-test('packages group by kind, runtimes first, unknown kinds last', async () => {
+test('packages group by kind, runtimes first, unknown kinds and uncatalogued installs last', async () => {
   const groups = ToolGroups.of(await listing());
   assert.deepEqual(
     groups.map((g) => [g.title, g.packages.map((p) => p.id)]),
@@ -136,6 +159,7 @@ test('packages group by kind, runtimes first, unknown kinds last', async () => {
       ['Utilities', ['jq', 'fd', 'git']],
       ['Clients', ['claude']],
       ['compiler', ['zig']],
+      ['Not in the catalog', ['acme-lint']],
     ],
   );
 });
@@ -154,6 +178,12 @@ test('a plan stages one change per package and previews it in listing order', as
   // An outdated install can be removed instead of updated.
   plan = plan.toggleRemove(node);
   assert.deepEqual(plan.body(), { add: ['fd'], remove: ['jq', 'node'] });
+  // An install the catalog no longer names can only be removed.
+  const acme = read.packages[6];
+  assert.ok(acme);
+  assert.deepEqual(ToolPlan.EMPTY.toggle(acme).changes(read), [
+    { change: 'remove', id: 'acme-lint', from: '0.3.0', to: null },
+  ]);
   // Toggling again unstages.
   plan = plan.toggle(fd).toggle(jq).toggleRemove(node);
   assert.ok(plan.empty);

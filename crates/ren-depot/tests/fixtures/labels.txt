@@ -1,4 +1,5 @@
 package::Kind: client runtime utility
+package::Origin: builtin operator
 provision::Fit: fits outside unverified missing
 source::Platform: linux_x64 linux_arm64 macos_arm64
 source::ArchiveFormat: tar_gz zip bare

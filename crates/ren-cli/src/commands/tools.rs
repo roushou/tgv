@@ -11,8 +11,7 @@ use ren_daemon::{
     tools::{HostToolbox, ToolStore, fetch::ReqwestFetch},
 };
 use ren_depot::{
-    Depot,
-    package::PackageId,
+    package::{Origin, PackageId},
     toolset::{Edit, Generation},
 };
 use ren_gateway::tools::{ChangeKind, ChangeOutcome, ToolChange, ToolListing};
@@ -87,7 +86,7 @@ impl ToolsCmd {
                 data_dir.join(ToolStore::FOLDER),
                 ReqwestFetch::new().context("cannot start downloads")?,
             ),
-            Depot::builtin()?,
+            config.tools.depot()?,
             HostTools::new(ctx.env.search_path()),
             HostTools::platform(),
             reader,
@@ -205,11 +204,16 @@ impl ToolsCmd {
             .map(|package| {
                 [
                     package.id.to_string(),
-                    package.kind.to_string(),
-                    package
-                        .release
-                        .as_ref()
-                        .map_or_else(|| "system only".to_owned(), ToString::to_string),
+                    match (package.origin, package.kind) {
+                        (Some(Origin::Builtin), Some(kind)) => kind.to_string(),
+                        (Some(Origin::Operator), Some(kind)) => format!("{kind} (configured)"),
+                        (None, _) | (Some(_), None) => "not in catalog".to_owned(),
+                    },
+                    match (&package.release, package.origin) {
+                        (Some(release), _) => release.to_string(),
+                        (None, Some(_)) => "system only".to_owned(),
+                        (None, None) => "-".to_owned(),
+                    },
                     package
                         .installed
                         .as_ref()

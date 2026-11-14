@@ -58,31 +58,49 @@ fn tarball() -> Vec<u8> {
     gz.finish().unwrap()
 }
 
+/// Whether the catalog still names the operator's jq.
+#[derive(Clone, Copy)]
+enum Jq {
+    Configured,
+    TakenOut,
+}
+
 async fn gateway(dir: &Path) -> (TestGateway, support::Mock) {
+    gateway_with(dir, "data", Jq::Configured).await
+}
+
+/// A gateway with its storage in `dir/data`, over the tool store in
+/// `dir/tools`.
+async fn gateway_with(dir: &Path, data: &str, jq: Jq) -> (TestGateway, support::Mock) {
     let bytes = tarball();
-    let depot = Depot::of(vec![
-        Package::new(
-            PackageId::JQ,
-            Kind::Utility,
-            "jq".parse().unwrap(),
-            Source::Release(Release {
-                version: "1.8.2".parse().unwrap(),
-                artifacts: vec![Artifact {
-                    platform: Platform::LinuxX64,
-                    url: URL.parse().unwrap(),
-                    sha256: Sha256::from_bytes(sha2::Sha256::digest(&bytes).into()),
-                    format: ArchiveFormat::TarGz,
-                    program_at: "jq-1.8.2/bin/jq".parse().unwrap(),
-                }],
-            }),
+    let jq = match jq {
+        Jq::TakenOut => None,
+        Jq::Configured => Some(
+            Package::new(
+                PackageId::JQ,
+                Kind::Utility,
+                "jq".parse().unwrap(),
+                Source::Release(Release {
+                    version: "1.8.2".parse().unwrap(),
+                    artifacts: vec![Artifact {
+                        platform: Platform::LinuxX64,
+                        url: URL.parse().unwrap(),
+                        sha256: Sha256::from_bytes(sha2::Sha256::digest(&bytes).into()),
+                        format: ArchiveFormat::TarGz,
+                        program_at: "jq-1.8.2/bin/jq".parse().unwrap(),
+                    }],
+                }),
+            )
+            .operator(),
         ),
-        Package::new(
-            PackageId::CODEX,
-            Kind::Client,
-            "codex".parse().unwrap(),
-            Source::System,
-        ),
-    ]);
+    };
+    let codex = Package::new(
+        PackageId::CODEX,
+        Kind::Client,
+        "codex".parse().unwrap(),
+        Source::System,
+    );
+    let depot = Depot::of(jq.into_iter().chain([codex]).collect());
     let toolbox = HostToolbox::new(
         ToolStore::new(dir.join("tools"), MemoryFetch(bytes)),
         depot,
@@ -93,7 +111,7 @@ async fn gateway(dir: &Path) -> (TestGateway, support::Mock) {
     let upstream = mock(Router::new()).await;
     let gateway = TestGateway::with_tools(
         &support::config(&upstream),
-        &dir.join("data"),
+        &dir.join(data),
         Arc::new(toolbox),
     )
     .await;
@@ -269,4 +287,62 @@ async fn tools_need_the_control_token_and_refuse_browsers() {
         .unwrap();
     assert_eq!(response.status().as_u16(), 403);
     assert!(!dir.path().join("tools/current").exists());
+}
+
+#[tokio::test]
+async fn an_install_taken_out_of_the_catalog_is_listed_until_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("data")).unwrap();
+    {
+        let (gateway, _upstream) = gateway(dir.path()).await;
+        let (_, listing) = call(&gateway, "GET", "/control/v1/tools", None).await;
+        assert_eq!(listing["packages"][0]["origin"], "operator");
+        let (status, changed) = call(
+            &gateway,
+            "POST",
+            "/control/v1/tools/change",
+            Some(json!({ "add": ["jq"] })),
+        )
+        .await;
+        assert_eq!(status, 200, "{changed}");
+    }
+    std::fs::create_dir_all(dir.path().join("later")).unwrap();
+    let (gateway, _upstream) = gateway_with(dir.path(), "later", Jq::TakenOut).await;
+    let (_, listing) = call(&gateway, "GET", "/control/v1/tools", None).await;
+    let jq = listing["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|package| package["id"] == "jq")
+        .unwrap();
+    assert_eq!(jq["origin"], Value::Null, "{listing}");
+    assert_eq!(jq["kind"], Value::Null);
+    assert_eq!(jq["installed"]["version"], "1.8.2");
+    // Asking for it again keeps it as it is; removing it needs no catalog
+    // entry.
+    let (status, unchanged) = call(
+        &gateway,
+        "POST",
+        "/control/v1/tools/change",
+        Some(json!({ "add": ["jq"] })),
+    )
+    .await;
+    assert_eq!((status, &unchanged["outcome"]), (200, &json!("unchanged")));
+    let (status, changed) = call(
+        &gateway,
+        "POST",
+        "/control/v1/tools/change",
+        Some(json!({ "remove": ["jq"] })),
+    )
+    .await;
+    assert_eq!(status, 200, "{changed}");
+    assert_eq!(changed["changes"][0]["change"], "remove");
+    let (_, listing) = call(&gateway, "GET", "/control/v1/tools", None).await;
+    assert!(
+        listing["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|package| package["id"] != "jq")
+    );
 }

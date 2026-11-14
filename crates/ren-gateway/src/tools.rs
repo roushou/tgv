@@ -5,7 +5,7 @@
 use futures_util::future::BoxFuture;
 use ren_depot::{
     job::Stage,
-    package::{Kind, PackageId, ProgramName},
+    package::{Kind, Origin, PackageId, ProgramName},
     source::Platform,
     toolset::{Edit, Generation, PlanError},
 };
@@ -66,11 +66,16 @@ pub struct ToolListing {
     pub generations: Vec<GenerationView>,
 }
 
-/// One package.
+/// One package: one the catalog names, or one the current generation
+/// holds that the catalog no longer names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ToolPackage {
     pub id: PackageId,
-    pub kind: Kind,
+    /// Which catalog names it; `None` once it was taken out of the
+    /// operator's configuration and only the install is left.
+    pub origin: Option<Origin>,
+    /// What it is for; `None` when the catalog no longer names it.
+    pub kind: Option<Kind>,
     /// The program it provides (`rg` for `ripgrep`).
     pub program: ProgramName,
     /// The release Ren installs; `None` for a package it only finds.

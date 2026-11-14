@@ -1,5 +1,5 @@
 //! The daemon's [`Toolbox`]: the control API's tools, over this host's tool
-//! store, the built-in catalog, and its search path. The CLI uses it too,
+//! store, the configured catalog, and its search path. The CLI uses it too,
 //! so `ren tools` and `/control/v1/tools` answer alike.
 
 use super::{Changed, ToolStore, ToolStoreError, fetch::Fetch};
@@ -142,11 +142,12 @@ impl<F> Inner<F> {
     fn listing(&self, live: &[Generation]) -> Result<ToolListing, ToolboxError> {
         let current = self.store.current().map_err(Self::failed)?;
         let survey = self.depot.survey(&self.host);
-        let packages = survey
+        let catalogued = survey
             .into_iter()
             .map(|Surveyed { package, provision }| ToolPackage {
                 id: package.id().clone(),
-                kind: package.kind(),
+                origin: Some(package.origin()),
+                kind: Some(package.kind()),
                 program: package.program().clone(),
                 release: match package.source() {
                     Source::System => None,
@@ -187,8 +188,27 @@ impl<F> Inner<F> {
                             .any(|requirement| requirement.package() == package.id())
                     })
                     .collect(),
-            })
-            .collect();
+            });
+        // Installs whose package was taken out of the catalog, until they
+        // are removed.
+        let uncatalogued = current
+            .installs()
+            .filter(|install| self.depot.package(&install.package).is_none())
+            .map(|install| ToolPackage {
+                id: install.package.clone(),
+                origin: None,
+                kind: None,
+                program: install.program.clone(),
+                release: None,
+                installed: Some(InstalledTool {
+                    version: install.version.clone(),
+                    sha256: install.sha256.to_string(),
+                    dir: install.dir().to_string(),
+                }),
+                system: None,
+                needed_by: Vec::new(),
+            });
+        let packages = catalogued.chain(uncatalogued).collect();
         let generations = self
             .store
             .generations()

@@ -227,7 +227,8 @@ impl Toolset {
     }
 
     /// The changes that make this toolset hold exactly `wanted`, each at the
-    /// release the catalog pins, for `platform`.
+    /// release the catalog pins, for `platform`. A held package the catalog
+    /// no longer names is kept as it is.
     pub fn plan(
         &self,
         depot: &Depot,
@@ -237,9 +238,14 @@ impl Toolset {
         let mut changes = Vec::new();
         let mut fetches = Vec::new();
         for id in wanted {
-            let package = depot
-                .package(id)
-                .ok_or_else(|| PlanError::Unknown(id.clone()))?;
+            let Some(package) = depot.package(id) else {
+                // A package taken out of the catalog stays as installed
+                // until it is removed.
+                if self.installs.contains_key(id) {
+                    continue;
+                }
+                return Err(PlanError::Unknown(id.clone()));
+            };
             let release = match package.source() {
                 Source::System => return Err(PlanError::SystemOnly(id.clone())),
                 Source::Release(release) => release,
@@ -590,6 +596,57 @@ mod tests {
             empty.plan(&depot, Platform::LinuxX64, &wanted(&[PackageId::FD])),
             Err(PlanError::Unknown(PackageId::FD))
         );
+    }
+
+    #[test]
+    fn an_install_taken_out_of_the_catalog_stays_until_removed() {
+        let empty = Toolset::empty();
+        let both = empty
+            .plan(
+                &depot("22.17.1", 'a'),
+                Platform::LinuxX64,
+                &wanted(&[PackageId::NODE, PackageId::JQ]),
+            )
+            .unwrap()
+            .apply(&empty)
+            .unwrap();
+        let without_jq = Depot::of(
+            depot("24.1.0", 'c')
+                .packages()
+                .iter()
+                .filter(|package| package.id() != &PackageId::JQ)
+                .cloned()
+                .collect(),
+        );
+        // Updating node keeps jq as it was.
+        let plan = both
+            .plan(
+                &without_jq,
+                Platform::LinuxX64,
+                &both.wanted_after(&Edit::default()).unwrap(),
+            )
+            .unwrap();
+        let after = plan.apply(&both).unwrap();
+        assert_eq!(after.install(&PackageId::JQ), both.install(&PackageId::JQ));
+        assert_eq!(
+            after
+                .install(&PackageId::NODE)
+                .map(|install| install.version.to_string()),
+            Some("24.1.0".to_owned())
+        );
+        // Removing it needs no catalog entry.
+        let removal = Edit {
+            add: BTreeSet::new(),
+            remove: wanted(&[PackageId::JQ]),
+        };
+        let plan = after
+            .plan(
+                &without_jq,
+                Platform::LinuxX64,
+                &after.wanted_after(&removal).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(plan.apply(&after).unwrap().install(&PackageId::JQ), None);
     }
 
     #[test]

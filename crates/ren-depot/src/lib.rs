@@ -1,11 +1,10 @@
 //! The tools Ren's agents run with: the packages Ren knows (the clients it
-//! drives, the runtimes they run on, and the utilities they use), what each
-//! client requires, and what a host provides for each.
+//! drives, the runtimes they run on, and the utilities they use, built in
+//! or added by the operator), what each client requires, what a host
+//! provides for each, and how toolsets are planned and installed.
 //!
 //! The primary type is [`Depot`]. It is sans-IO: it reaches the host only
-//! through the [`ToolHost`] port, which the daemon implements. Today it
-//! observes the host's search path; installing packages is planned
-//! (docs/plans/dependencies.md).
+//! through the [`ToolHost`] port, which the daemon implements.
 
 mod catalog;
 pub mod job;
@@ -19,7 +18,7 @@ pub mod version;
 mod purity;
 
 use catalog::Catalog;
-pub use catalog::CatalogError;
+pub use catalog::{CatalogEntry, CatalogError, ReleaseEntry};
 use package::{Package, PackageId, ProgramName};
 use provision::{Found, Provision};
 use std::path::{Path, PathBuf};
@@ -55,6 +54,14 @@ impl Depot {
     /// Ren installs of each that has one.
     pub fn builtin() -> Result<Self, CatalogError> {
         Catalog::read(include_str!("catalog.toml")).map(|catalog| Self { catalog: catalog.0 })
+    }
+
+    /// The built-in catalog with the operator's `entries`, each adding a
+    /// runtime or utility or replacing the built-in one of the same name.
+    pub fn configured(entries: &[CatalogEntry]) -> Result<Self, CatalogError> {
+        Catalog::read(include_str!("catalog.toml"))?
+            .with(entries)
+            .map(|catalog| Self { catalog: catalog.0 })
     }
 
     /// A depot with this catalog instead of the built-in one.

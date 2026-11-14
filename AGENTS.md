@@ -189,8 +189,10 @@ dependencies under "Crates" below. Read the code for current module ownership.
   manifest allows only pure dependencies, and a test keeps its sources free of
   I/O.
 - `crates/ren-depot`: the tools Ren's agents run with, with `Depot` as its
-  primary type: the built-in package catalog (`package`: `Package`,
-  `PackageId`, `ProgramName`, and `Kind`, client, runtime, or utility), a
+  primary type: the package catalog (`package`: `Package`, `PackageId`,
+  `ProgramName`, `Kind`, client, runtime, or utility, and `Origin`; the
+  built-in `catalog.toml` and the operator's `[tools]` entries, a
+  `CatalogEntry` each, merged by `Depot::configured`), a
   `Requirement` (a package and a `semver` range), a program's version read
   from its own `--version` output (`version`: `ObservedVersion`, which keeps
   output it cannot read and probes that did not answer), and what a host
@@ -202,10 +204,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
   and the pure `InstallJob` machine (`job`). It reaches the host only
   through its `ToolHost` port, which the daemon's `HostTools` implements;
   `ren doctor` surveys the host with it. The daemon's `tools` module carries
-  out its jobs and generations, but nothing triggers an install yet: the
-  catalog's releases, the control API and CLI, runs' pinned toolsets, and
-  the UI are planned in
-  `docs/plans/dependencies.md`, where deviations from it are recorded. Its
+  out its jobs and generations, for `ren tools`, `/control/v1/tools`, and
+  the UI's Tools view; `docs/plans/dependencies.md` is the plan, where
+  deviations from it are recorded. Its
   manifest allows only pure dependencies, and `src/purity.rs` keeps its
   sources free of I/O.
 - `crates/ren-harness`: the harnesses, with `Harness` (`ClaudeCode`, `Codex`, `Pi`, `OpenCode`)

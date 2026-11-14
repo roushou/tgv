@@ -194,7 +194,7 @@ impl fmt::Display for RelativePath {
 }
 
 /// One platform's download of a release.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
     pub platform: Platform,

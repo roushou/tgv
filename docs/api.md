@@ -386,8 +386,10 @@ API's; `ren tools` on the host prints the same JSON (`list --json`).
 - `GET /control/v1/tools`: `{api_version, platform, generation, bin, packages,
   generations}`; `bin` is the current generation's folder of programs (`null`
   before any). `platform` is `linux_x64`, `linux_arm64`, `macos_arm64`, or
-  `null` where Ren installs nothing. Each package has `id`, `kind` (`client`,
-  `runtime`, `utility`), the `program` it provides, the `release` Ren installs (`null`: only found on
+  `null` where Ren installs nothing. Each package has `id`, `origin`
+  (`builtin`, `operator` for a `[tools]` entry, or `null` for an install the
+  catalog no longer names, which can only be removed), `kind` (`client`,
+  `runtime`, `utility`, or `null` with no catalog entry), the `program` it provides, the `release` Ren installs (`null`: only found on
   `PATH`), what the current generation holds (`installed`: `version`,
   `sha256`, `dir`), what the daemon's `PATH` has (`system`: `path`, the
   `version` it reported, or `unread`, what it printed instead), and the
