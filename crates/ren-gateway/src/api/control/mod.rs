@@ -14,6 +14,7 @@
 mod history;
 mod runs;
 mod sessions;
+mod tools;
 
 use crate::control::{ControlError, Controls, RunningCall};
 use crate::operator::{OperatorCommand, OperatorState, RetryAfter};
@@ -222,6 +223,7 @@ impl ControlApi {
         self,
         reader: ren_store::Reader,
         supervisor: Option<Supervisor>,
+        toolbox: Option<Arc<dyn crate::tools::Toolbox>>,
         shutdown: CancellationToken,
     ) -> Router {
         let control = Arc::new(self);
@@ -243,6 +245,11 @@ impl ControlApi {
             reader,
         }
         .router();
+        let tools_routes = tools::ToolsApi {
+            control: control.clone(),
+            toolbox,
+        }
+        .router();
         Router::new()
             .route("/control/v1/state", get(Self::state))
             .route("/control/v1/pause", post(Self::pause))
@@ -258,6 +265,7 @@ impl ControlApi {
             .route("/control/v1/backup", post(Self::backup))
             .with_state(control)
             .merge(run_routes)
+            .merge(tools_routes)
             .merge(session_routes)
             .merge(history_routes)
             .layer(axum::middleware::map_response(Self::private))

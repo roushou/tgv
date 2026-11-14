@@ -728,3 +728,59 @@ async fn runs_through_a_gateway_send_the_control_requests() {
     }
     server.abort();
 }
+
+#[test]
+fn tools_lists_the_catalog_and_refuses_what_it_cannot_change_offline() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("ren.toml");
+    std::fs::write(&config, "version = 1\n").unwrap();
+    let data = temp.path().join("state");
+    let ren = |args: &[&str]| {
+        let mut all = vec![
+            "--config",
+            config.to_str().unwrap(),
+            "--data-dir",
+            data.to_str().unwrap(),
+            "tools",
+        ];
+        all.extend(args);
+        cli(&all)
+    };
+
+    let output = ren(&["list", "--json"]);
+    success(&output);
+    let listing = json(&output);
+    assert_eq!(listing["generation"], 0);
+    let ids: Vec<&str> = listing["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "claude", "codex", "pi", "opencode", "node", "bun", "git", "jq", "fd", "ripgrep"
+        ]
+    );
+    let node = &listing["packages"][4];
+    assert_eq!(node["kind"], "runtime");
+    assert!(node["release"].is_string());
+    assert!(node["installed"].is_null());
+
+    // Refused before anything is downloaded.
+    let output = ren(&["install", "codex"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("only adopted from the system"));
+    let output = ren(&["remove", "jq"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("jq is not installed by Ren"));
+    assert_eq!(ren(&["install", "Not-A-Name"]).status.code(), Some(2));
+
+    let output = ren(&["gc"]);
+    success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "nothing to remove\n"
+    );
+}

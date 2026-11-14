@@ -6,7 +6,7 @@ and exposing it, using the operator's own Anthropic and OpenAI subscriptions. On
 a laptop and a VPS reached through Tailscale.
 
 [`docs/architecture.md`](docs/architecture.md) describes how Ren is built and
-lists its known limitations. Section 4 below maps the eight crates and the `xtask` package.
+lists its known limitations. Section 4 below maps the nine crates and the `xtask` package.
 
 - All code follows the principles (section 2) and the workspace lints.
 - Never describe unbuilt functionality as working. Read the source before assuming
@@ -138,8 +138,9 @@ Modules carry no lint headers of their own. A module with submodules lives in
 
 - The only exemptions are the capability implementations themselves, marked with
   `#[expect(clippy::disallowed_methods, reason = "…")]`: `HostEnv::capture`, the
-  daemon's `SystemClock`, `RandomIds`, and `ProcessHost` (`ren_daemon::host`, its process
-  starts and its program lookup on the agents' `PATH`), and the daemon's server
+  daemon's `SystemClock`, `RandomIds`, `ProcessHost` (`ren_daemon::host`, its process
+  starts and its program lookup on the agents' `PATH`), and `HostTools` (its
+  `--version` probes), and the daemon's server
   and supervisor task spawns. The recorder runs on `ObservationThread` (`ren_daemon::host`), a
   thread with its own runtime.
 - Integration-test crates (`crates/*/tests/*.rs`) act as a shell: each has one
@@ -166,7 +167,7 @@ saturation, and persistence recovery.
 
 ## 4. Workspace map
 
-This map describes the code as it is: the eight crates, listed with their
+This map describes the code as it is: the nine crates, listed with their
 dependencies under "Crates" below. Read the code for current module ownership.
 
 - `docs/architecture.md`: how Ren is built, and its known limitations. The other
@@ -187,6 +188,27 @@ dependencies under "Crates" below. Read the code for current module ownership.
   the native identifiers and message hints the wire carries (`native`). Its
   manifest allows only pure dependencies, and a test keeps its sources free of
   I/O.
+- `crates/ren-depot`: the tools Ren's agents run with, with `Depot` as its
+  primary type: the package catalog (`package`: `Package`, `PackageId`,
+  `ProgramName`, `Kind`, client, runtime, or utility, and `Origin`; the
+  built-in `catalog.toml` and the operator's `[tools]` entries, a
+  `CatalogEntry` each, merged by `Depot::configured`), a
+  `Requirement` (a package and a `semver` range), a program's version read
+  from its own `--version` output (`version`: `ObservedVersion`, which keeps
+  output it cannot read and probes that did not answer), and what a host
+  provides and whether it fits (`provision`: `Provision`, `Fit`). For
+  installing, it has where a package comes from (`source`: `Source`, a
+  `Release` with an `Artifact` per `Platform` pinned by `Sha256`), immutable
+  installs gathered into numbered generations (`toolset`: `Install`,
+  `Toolset`, `Generation`, and the `Plan` from one generation to the next),
+  and the pure `InstallJob` machine (`job`). It reaches the host only
+  through its `ToolHost` port, which the daemon's `HostTools` implements;
+  `ren doctor` surveys the host with it. The daemon's `tools` module carries
+  out its jobs and generations, for `ren tools`, `/control/v1/tools`, and
+  the UI's Tools view; `docs/plans/dependencies.md` is the plan, where
+  deviations from it are recorded. Its
+  manifest allows only pure dependencies, and `src/purity.rs` keeps its
+  sources free of I/O.
 - `crates/ren-harness`: the harnesses, with `Harness` (`ClaudeCode`, `Codex`, `Pi`, `OpenCode`)
   as its primary type. Each client is one module holding everything Ren
   knows of it: `codex` (the `CodexAppServer` codec for `codex app-server`
@@ -200,7 +222,8 @@ dependencies under "Crates" below. Read the code for current module ownership.
   types, with `HeaderReading`, which each client's headers extend, behind
   `Harness::attribution`); launch plans (`launch`: `LaunchPlan`, each client
   a named constructor, behind `Harness::launch`, `Harness::drive`, and
-  `Harness::list_models`); what tools and messages mean for activity
+  `Harness::list_models`, and the packages each client needs on its host,
+  `Harness::requirements`); what tools and messages mean for activity
   (`tools`: effects, the user context each client adds, exit codes, why a
   client sent a call (`CallPurpose`: work, or Claude Code's quota probe),
   and `InterpretedCall`, a `Reading` read as its client uses it); driving a
@@ -298,7 +321,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `ClientStatus` (`client`) say whether a run can start
   with each client here; `AgentHost` (`host`) is the port for resolving paths,
   looking in folders, making folders (a scratch run's as a repository),
-  finding programs, and starting processes, which tests
+  finding programs, the current toolset a process gets (`RunTools`: a
+  generation and its folder, none, or an unreadable store, recorded as such
+  with the run), and starting processes, which tests
   fill with
   scripted in-memory agents. `SupervisorTask` is the shell: one task reads every
   agent's stdout, writes its stdin, and waits for its exit, records each run
@@ -344,6 +369,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
     `Controls` (token or Tailscale identity; browsers refused), and its
     `[control]` configuration (`ControlOptions`) and `ControlToken`. Handler state
     stays crate-private; configuration and token types are exported at the root.
+    Its `tools` module serves `/control/v1/tools` (listing, change, and
+    collection) through the `Toolbox` port the gateway declares in `tools`
+    (with its views), which the daemon's `HostToolbox` implements.
     Its `sessions` module serves `/control/v1/sessions`: creating a session,
     prompting, unqueueing, answering approvals, configuring, choosing its
     client while a draft, interrupting, stopping, archiving, unarchiving,
@@ -362,14 +390,25 @@ dependencies under "Crates" below. Read the code for current module ownership.
   coordinates HTTP shutdown before capture drain. It defines no
   HTTP routes or handlers and has no production Axum dependency. `config` turns
   `Config` into a `RuntimeConfig`. `host` holds `SystemClock`, `RandomIds`,
-  `ObservationThread`, and `ProcessHost`, the supervisor's `AgentHost`.
+  `ObservationThread`, `ProcessHost`, the supervisor's `AgentHost`, and
+  `HostTools`, the depot's `ToolHost`. `tools` is the tool store on disk
+  (`ToolStore`, under `<data>/tools`): it carries out the depot's
+  `InstallJob`s (downloading through its `Fetch` seam, `ReqwestFetch` in
+  production, https only and capped in bytes; unpacking tar.gz, zip, and
+  bare releases, refusing entries that reach outside their folder), and
+  applies an `Edit` under its lock file (`ToolStore::change`), activating,
+  restoring, and collecting toolset generations with renames of finished
+  folders and links. `HostToolbox` is the gateway's `Toolbox` over it,
+  which `ren tools` uses too.
   Its integration tests hold `TestGateway` (`tests/support`) and the gateway,
   WebSocket, decision, and full-daemon tests; they use the gateway's complete
   router with test capabilities.
 - `crates/ren-cli`: the `ren` binary, with `Cli` as its primary type
   (`lib.rs`) and a thin `main.rs` that sets up logging and captures `HostEnv`.
   `commands` holds clap parsing and dispatch (`runs` is `ren runs`, the
-  control API's runs, sent through `ControlTarget` like `ren control`): each command is a
+  control API's runs, sent through `ControlTarget` like `ren control`;
+  `tools` is `ren tools`, the depot's catalog and this host's tool store,
+  acted on in its data directory): each command is a
   `#[derive(Args)]` struct with its own execution method, and command groups
   are `#[derive(Subcommand)]` enums. `client` chooses the gateway (`--gateway`,
   `REN_GATEWAY`, `client.toml`, then the local listener) and owns
@@ -393,15 +432,20 @@ dependencies under "Crates" below. Read the code for current module ownership.
   reads the daemon only through the management API and forwards only allowlisted
   read-only endpoints. It never forwards browser cookies or credentials, never reads
   storage directly, and never proxies inference. There are two exceptions.
-  Runs: with `REN_CONTROL_TOKEN_FILE` set, `/control/runs*`,
-  `/control/sessions*` (not the operator state's session blocks), and
-  `/control/history/*` (`src/lib/server/control.ts`, `RunsProxy`) forward the
-  Sessions view's same-origin JSON requests to the daemon's `/control/v1/runs*`,
-  `/control/v1/sessions*`, and its archive, unarchive, and delete routes only, with the control token read from that
+  Runs and tools: with `REN_CONTROL_TOKEN_FILE` set, `/control/runs*`,
+  `/control/sessions*` (not the operator state's session blocks),
+  `/control/history/*`, and `/control/tools*` (`src/lib/server/control.ts`,
+  `RunsProxy`) forward the Sessions and Tools views' same-origin JSON requests
+  to the daemon's `/control/v1/runs*`, `/control/v1/sessions*`, its archive,
+  unarchive, and delete routes, and `/control/v1/tools` (listing, change, and
+  collection) only, with the control token read from that
   file on each request, never sent to the browser, and, with
   `REN_CONTROL_LOGINS` set, only for those Tailscale logins; `src/lib/runs.ts`
   is the view's pure core (run states, the live transcript, the sessions by
   folder (`Sessions`), projects by place, and the clients a run can start with),
+  `src/lib/tools.ts` the Tools view's pure core (each package's
+  `Standing`, the `ToolPlan` staged before it is applied, and `ToolGroups`),
+  whose first read the UI server makes (`src/routes/tools/+page.server.ts`),
   `src/lib/mention.ts` the composer's offers (the client's commands after
   `/` or `$`, the folder's files after `@`), `src/lib/redline.ts` Redline's
   pure core (what a mark points at, the brief an agent gets, and the open
@@ -458,7 +502,8 @@ directly.
 | Crate                                      | Primary type                                        | Depends on        |
 | ------------------------------------------ | --------------------------------------------------- | ----------------- |
 | `ren-protocol`                             | `CallInspector`                                     | none of ours      |
-| `ren-harness`                              | `Harness` (`ClaudeCode`, `Codex`, `Pi`, `OpenCode`) | protocol          |
+| `ren-depot`                                | `Depot`, with its `ToolHost` port                   | none of ours      |
+| `ren-harness`                              | `Harness` (`ClaudeCode`, `Codex`, `Pi`, `OpenCode`) | protocol, depot   |
 | `ren-recorder`                             | `Recorder`, with its `RecordSink` port              | protocol, harness |
 | `ren-store`                                | `Store`, which implements `RecordSink`              | recorder          |
 | `ren-supervisor`                           | `Supervisor`, with its `AgentHost` port             | recorder, harness |

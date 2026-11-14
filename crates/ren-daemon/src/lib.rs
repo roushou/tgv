@@ -7,9 +7,11 @@
 
 pub mod config;
 pub mod host;
+pub mod tools;
 
 use crate::config::RuntimeConfig;
-use crate::host::{ObservationThread, ProcessHost, RandomIds, SystemClock};
+use crate::host::{HostTools, ObservationThread, ProcessHost, RandomIds, SystemClock};
+use crate::tools::{HostToolbox, ToolStore, fetch::ReqwestFetch};
 use ren_gateway::{
     Build, ControlToken, Gateway, ManagementSetup, ReqwestUpstream, Shutdown, Stopped,
     control::Controls,
@@ -185,7 +187,7 @@ impl Daemon {
         )?;
         let mut worker =
             ObservationThread::start(task.run()).map_err(DaemonError::ObservationThread)?;
-        let runs = match Self::runs(config, address, &recorder, &ids) {
+        let runs = match Self::runs(config, data_dir, address, &recorder, &ids) {
             Ok(runs) => runs,
             Err(error) => {
                 drop(recorder);
@@ -215,9 +217,11 @@ impl Daemon {
             clock,
             shutdown.clone(),
         );
+        let tools = Self::toolbox(config, data_dir, &reader);
         let ingress = gateway.into_ingress(
             listener,
             ManagementSetup {
+                tools,
                 reader,
                 backup,
                 retention: config.retention().clone(),
@@ -289,6 +293,7 @@ impl Daemon {
     /// clients send their model traffic to this daemon's own listener.
     fn runs(
         config: &RuntimeConfig,
+        data_dir: &std::path::Path,
         address: SocketAddr,
         recorder: &Recorder,
         ids: &Arc<dyn IdSource>,
@@ -310,10 +315,33 @@ impl Daemon {
         };
         Ok(Some(Supervisor::new(
             options,
-            ProcessHost::new(config.pi_cache().cloned()),
+            ProcessHost::new(
+                config.pi_cache().cloned(),
+                config.agent_path().to_vec(),
+                ToolStore::without_downloads(data_dir.join(ToolStore::FOLDER)),
+            ),
             ids.clone(),
             recorder.clone(),
         )?))
+    }
+
+    /// The host's tools for the control API, or none when downloads cannot
+    /// be set up (the tools routes then say so).
+    fn toolbox(
+        config: &RuntimeConfig,
+        data_dir: &std::path::Path,
+        reader: &Reader,
+    ) -> Option<Arc<dyn ren_gateway::tools::Toolbox>> {
+        let fetch = ReqwestFetch::new()
+            .inspect_err(|error| tracing::warn!(%error, "tools: cannot start downloads"))
+            .ok()?;
+        Some(Arc::new(HostToolbox::new(
+            ToolStore::new(data_dir.join(ToolStore::FOLDER), fetch),
+            config.depot().clone(),
+            HostTools::new(config.agent_path().to_vec()),
+            HostTools::platform(),
+            Some(reader.clone()),
+        )))
     }
 
     /// Address bound by the current or most recently completed run.

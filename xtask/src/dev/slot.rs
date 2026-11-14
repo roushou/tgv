@@ -12,7 +12,7 @@ use crate::{
     tailscale::{Route, ServeStatus},
     ui::UiDeploy,
 };
-use ren_daemon::config::{Config, RunsOptions, UpstreamConfig};
+use ren_daemon::config::{Config, RunsOptions, ToolsOptions, UpstreamConfig};
 use ren_gateway::{
     ControlToken, EntryIngress, Environment, InstanceOptions,
     user::{TokenDigest, UserConfig},
@@ -260,9 +260,29 @@ impl Slot {
                 places: vec![self.places_dir.clone()],
                 scratch: Some(self.scratch_dir.clone()),
             },
+            tools: toml::from_str::<ToolsOptions>(Self::TOOLS).map_err(|_| DevError::Config)?,
             ..Config::default()
         })
     }
+
+    /// An operator catalog entry, so the Tools view shows one. Its download
+    /// is invented and never answers, so installing it fails at fetch.
+    const TOOLS: &'static str = r#"
+[[package]]
+id = "acme-lint"
+kind = "utility"
+program = "acme-lint"
+
+[package.release]
+version = "0.3.0"
+
+[[package.release.artifact]]
+platform = "linux_x64"
+url = "https://example.invalid/acme-lint-0.3.0.tar.gz"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+format = "tar_gz"
+program_at = "acme-lint"
+"#;
 
     fn step(message: &str) {
         InstallVps::step(message);
@@ -647,6 +667,7 @@ mod tests {
         let slot = Slot::new(&HostEnv::from_pairs([("HOME", "/home/dev")])).unwrap();
         let config = slot.config().unwrap();
         config.check().unwrap();
+        assert_eq!(config.tools.package.len(), 1);
         let text = toml::to_string(&config).unwrap();
         for url in [
             &config.anthropic_base_url,

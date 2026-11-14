@@ -1,5 +1,6 @@
 //! Strict startup configuration. This revision is immutable for the daemon lifetime.
 
+use ren_depot::{CatalogEntry, CatalogError, Depot};
 use ren_gateway::{
     BufferOptions, ConfiguredEntry, ControlOptions, EntryIngress, GatewayConfig, InstanceOptions,
     NativeUrls, OperatorKey, TransportTimeouts, UpstreamAuth, UpstreamEntry, UpstreamTable,
@@ -78,6 +79,8 @@ pub enum ConfigError {
     Revision(#[source] serde_json::Error),
     #[error("set --data-dir when HOME is unavailable")]
     NoDataDir,
+    #[error("tools: {0}")]
+    Tools(#[from] CatalogError),
     #[error(
         "runs.roots entries must be absolute paths, and runs.places and runs.scratch absolute or under ~/"
     )]
@@ -127,6 +130,29 @@ pub struct Config {
     pub instance: InstanceOptions,
     /// Agent runs: off until roots are configured.
     pub runs: RunsOptions,
+    /// The packages the operator adds to the built-in catalog.
+    #[serde(skip_serializing_if = "ToolsOptions::is_empty")]
+    pub tools: ToolsOptions,
+}
+
+/// The `[tools]` section: catalog entries in the built-in catalog's form,
+/// each adding a runtime or utility Ren can install for its agents, or
+/// replacing the built-in one of the same name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolsOptions {
+    pub package: Vec<CatalogEntry>,
+}
+
+impl ToolsOptions {
+    fn is_empty(&self) -> bool {
+        self.package.is_empty()
+    }
+
+    /// The built-in catalog with these entries.
+    pub fn depot(&self) -> Result<Depot, ConfigError> {
+        Ok(Depot::configured(&self.package)?)
+    }
 }
 
 /// The `[runs]` section: the folders agent runs may work in. Runs are off
@@ -272,6 +298,7 @@ impl Default for Config {
             users: Vec::new(),
             instance: InstanceOptions::default(),
             runs: RunsOptions::default(),
+            tools: ToolsOptions::default(),
         }
     }
 }
@@ -346,6 +373,7 @@ impl Config {
         )?;
         let policy = Policy::new(self.policy.clone(), &upstreams.summaries())?;
         let users = Users::new(self.users.clone())?;
+        let depot = self.tools.depot()?;
         Ok(RuntimeConfig {
             listen: self.listen,
             upstreams,
@@ -371,6 +399,11 @@ impl Config {
                 Keys::Env(env) => PiCache::locate(env).ok(),
                 Keys::Unchecked => None,
             },
+            agent_path: match keys {
+                Keys::Env(env) => env.search_path(),
+                Keys::Unchecked => Vec::new(),
+            },
+            depot,
             revision: self.revision()?,
         })
     }
@@ -432,6 +465,7 @@ impl Config {
         self.buffer.validate()?;
         self.control.validate()?;
         self.runs.validate()?;
+        self.tools.depot()?;
         Ok(())
     }
 
@@ -479,6 +513,10 @@ pub struct RuntimeConfig {
     /// Where driven Pi processes find Ren's extension, when the host
     /// environment names a cache.
     pi_cache: Option<PiCache>,
+    /// The host's search path, which a run's toolset folder is put before.
+    agent_path: Vec<PathBuf>,
+    /// The packages Ren knows: the built-in catalog with `[tools]`.
+    depot: Depot,
     revision: String,
 }
 
@@ -501,6 +539,13 @@ impl RuntimeConfig {
     pub fn run_places(&self) -> &RunPlaces {
         &self.run_places
     }
+    pub fn agent_path(&self) -> &[PathBuf] {
+        &self.agent_path
+    }
+    pub fn depot(&self) -> &Depot {
+        &self.depot
+    }
+
     pub fn pi_cache(&self) -> Option<&PiCache> {
         self.pi_cache.as_ref()
     }
@@ -568,6 +613,38 @@ mod tests {
             ..Config::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn tools_entries_join_the_builtin_catalog_and_bad_ones_are_refused_at_load() {
+        let entry =
+            "[[tools.package]]\nid = \"acme-lint\"\nkind = \"utility\"\nprogram = \"acme-lint\"\n\
+                     [tools.package.release]\nversion = \"0.3.0\"\n\
+                     [[tools.package.release.artifact]]\nplatform = \"linux_x64\"\n\
+                     url = \"https://example.test/acme-lint.tar.gz\"\nsha256 = \"{digest}\"\n\
+                     format = \"tar_gz\"\nprogram_at = \"acme-lint\"\n"
+                .replace("{digest}", &"a".repeat(64));
+        let config: Config = toml::from_str(&entry).unwrap();
+        config.validate().unwrap();
+        let depot = config.resolve().unwrap().depot().clone();
+        let acme = depot.package(&"acme-lint".parse().unwrap()).unwrap();
+        assert_eq!(acme.origin(), ren_depot::package::Origin::Operator);
+        // The section round-trips, and is left out of the revision when empty.
+        let written: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(written.tools, config.tools);
+        assert!(
+            !toml::to_string(&Config::default())
+                .unwrap()
+                .contains("tools")
+        );
+
+        let client = "[[tools.package]]\nid = \"codex\"\nkind = \"utility\"\nprogram = \"codex\"\n";
+        let config: Config = toml::from_str(client).unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::Tools(ren_depot::CatalogError::Client(_)))
+        ));
+        assert!(toml::from_str::<Config>(&entry.replace("https://", "http://")).is_err());
     }
 
     #[test]

@@ -452,6 +452,7 @@ impl<H: AgentHost> SupervisorTask<H> {
             Driver::open(harness, opening, &self.version, self.ids.next_uuid())
                 .map_err(StartError::NotDrivable)?;
         let run = RunId::generate(self.ids.as_ref());
+        let tools = self.host.tools();
         // Every run is recorded: without room, it does not start.
         let tap = self
             .recorder
@@ -461,10 +462,11 @@ impl<H: AgentHost> SupervisorTask<H> {
                 harness,
                 workdir.as_str().to_owned(),
                 settings.clone(),
+                tools.generation(),
             )
             .map_err(StartError::Unrecorded)?;
         held.process = Some(run);
-        let process = match self.host.spawn(&plan, &workdir) {
+        let process = match self.host.spawn(&plan, &workdir, &tools) {
             Ok(process) => process,
             Err(source) => {
                 tap.end(RunEnd::SpawnFailed, None);
@@ -953,10 +955,13 @@ impl<H: AgentHost> SupervisorTask<H> {
         let (listing, first) =
             ModelListing::open(harness, &self.version, &workdir.as_path().to_string_lossy())
                 .map_err(ModelsError::NotDrivable)?;
-        let process = self.host.spawn(&plan, &workdir).map_err(|error| {
-            tracing::debug!(%harness, %error, "cannot start a client to list its models");
-            ModelsError::Spawn
-        })?;
+        let process = self
+            .host
+            .spawn(&plan, &workdir, &self.host.tools())
+            .map_err(|error| {
+                tracing::debug!(%harness, %error, "cannot start a client to list its models");
+                ModelsError::Spawn
+            })?;
         Ok(ModelProbe::run(listing, first, process, self.line_limit).boxed())
     }
 

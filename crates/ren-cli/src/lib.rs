@@ -58,6 +58,7 @@ enum Command {
     Control(commands::control::ControlCmd),
     Runs(commands::runs::RunsCmd),
     Users(commands::users::UsersCmd),
+    Tools(commands::tools::ToolsCmd),
     Mcp(commands::mcp::McpCmd),
 }
 
@@ -108,6 +109,7 @@ impl Cli {
             Command::Control(cmd) => cmd.run(&ctx).await,
             Command::Runs(cmd) => cmd.run(&ctx).await,
             Command::Users(cmd) => cmd.run(&ctx),
+            Command::Tools(cmd) => cmd.run(&ctx).await,
             Command::Mcp(cmd) => cmd.run(&ctx).await,
         }
     }

@@ -8,8 +8,10 @@
  * `/control/v1/runs` reads (the live runs and their feed, the projects a
  * session can start in, and the clients and models it can start with), and
  * its `/control/v1/history` routes (archiving, unarchiving, and deleting a
- * recording or a run). Never inference, reads of history, the operator
- * state's session blocks, or the rest of the control API.
+ * recording or a run), and its `/control/v1/tools` routes (the host's tools
+ * for agents: their listing, a change, a rollback, and a collection). Never inference,
+ * reads of history, the operator state's session blocks, or the rest of the
+ * control API.
  *
  * The browser never sees the token: this server reads it from the file on
  * each request (the daemon writes a new one when it starts) and sends it as
@@ -70,8 +72,16 @@ export interface ControlHost {
   readToken(path: string): Promise<string>;
 }
 
-/** `query`: the query parameters forwarded; every other one is dropped. */
-type Route = { method: 'GET' | 'POST'; feed: boolean; query?: readonly string[] };
+/**
+ * `query`: the query parameters forwarded; every other one is dropped.
+ * `timeout`: how long a request that is not a feed may take, in ms.
+ */
+type Route = {
+  method: 'GET' | 'POST';
+  feed: boolean;
+  query?: readonly string[];
+  timeout?: number;
+};
 
 const runId = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
 /** Approval ids are the client's own; kept to URL-safe text as browsers encode it. */
@@ -116,6 +126,15 @@ const routes: { pattern: RegExp; route: Route }[] = [
     ),
     route: { method: 'POST', feed: false },
   },
+  // Tools: the listing reads versions by running each program found, and a
+  // change downloads and unpacks releases, so both may take a while.
+  { pattern: /^\/control\/tools$/, route: { method: 'GET', feed: false, timeout: 60_000 } },
+  {
+    pattern: /^\/control\/tools\/change$/,
+    route: { method: 'POST', feed: false, timeout: 15 * 60_000 },
+  },
+  { pattern: /^\/control\/tools\/rollback$/, route: { method: 'POST', feed: false } },
+  { pattern: /^\/control\/tools\/gc$/, route: { method: 'POST', feed: false, timeout: 60_000 } },
 ];
 /** Creating a session is the one POST to the session listing's own path. */
 const sessionsPath = '/control/sessions';
@@ -171,7 +190,7 @@ export class RunsProxy {
       const value = url.searchParams.get(name);
       if (value !== null) target.searchParams.set(name, value);
     }
-    const timeout = AbortSignal.timeout(30_000);
+    const timeout = AbortSignal.timeout(route.timeout ?? 30_000);
     try {
       // Global fetch: no browser cookies, credentials, or Origin are forwarded.
       const upstream = await this.#host.fetch(target, {

@@ -6,14 +6,17 @@
 //! random identities. Components receive them as values; nothing else calls
 //! `SystemTime::now`, `Instant::now`, or `Uuid::new_v4`.
 
+use crate::tools::ToolStore;
+use ren_depot::toolset::Generation;
+use ren_depot::{ToolHost, package::ProgramName, source::Platform, version::ProbeFailure};
 use ren_harness::{launch::LaunchPlan, pi::PiCache};
 use ren_recorder::{
     id::IdSource,
     time::{Clock, Moment, Monotonic, UnixMillis},
 };
 use ren_supervisor::{
-    AgentHost, AgentProcess, FoundPath, KillSwitch, Look, PathKind, ProcessExit, WalkLimits,
-    Workdir,
+    AgentHost, AgentProcess, FoundPath, KillSwitch, Look, PathKind, ProcessExit, RunTools,
+    WalkLimits, Workdir,
 };
 use std::future::Future;
 use std::io;
@@ -22,6 +25,99 @@ use std::process::Stdio;
 use std::time::{Instant, SystemTime};
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+/// The depot's view of this host: programs on a search path, and their
+/// versions, read by running them briefly. The search path is passed in
+/// (from `HostEnv`), never read here.
+#[derive(Debug, Clone)]
+pub struct HostTools {
+    search_path: Vec<PathBuf>,
+}
+
+impl HostTools {
+    /// How often, and how many times, a probe checks whether its program
+    /// has exited: 60 checks 50 ms apart, about three seconds in all.
+    const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+    const POLLS: u32 = 60;
+    /// The most of a probe's output that is read.
+    const OUTPUT_LIMIT: u64 = 64 * 1024;
+
+    pub fn new(search_path: Vec<PathBuf>) -> Self {
+        Self { search_path }
+    }
+
+    /// The platform this binary was built for, if Ren installs tools there.
+    pub fn platform() -> Option<Platform> {
+        Platform::of(std::env::consts::OS, std::env::consts::ARCH)
+    }
+
+    fn executable(path: &Path) -> bool {
+        std::fs::metadata(path).is_ok_and(|metadata| {
+            if !metadata.is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
+    }
+
+    fn output(child: &mut std::process::Child) -> String {
+        use std::io::Read as _;
+        let mut bytes = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            let _ = stdout.take(Self::OUTPUT_LIMIT).read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+impl ToolHost for HostTools {
+    fn locate(&self, program: &ProgramName) -> Option<PathBuf> {
+        self.search_path.iter().find_map(|dir| {
+            #[cfg(windows)]
+            let file = dir.join(format!("{program}.exe"));
+            #[cfg(not(windows))]
+            let file = dir.join(program.as_str());
+            Self::executable(&file).then_some(file)
+        })
+    }
+
+    fn probe(&self, path: &Path, args: &[&str]) -> Result<String, ProbeFailure> {
+        let mut command = std::process::Command::new(path);
+        command
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the host runs a program it found to read its version"
+        )]
+        let mut child = command.spawn().map_err(|_| ProbeFailure::NotStarted)?;
+        for _ in 0..Self::POLLS {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(Self::output(&mut child)),
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) => std::thread::sleep(Self::POLL),
+            }
+        }
+        let timed_out = matches!(child.try_wait(), Ok(None));
+        let _ = child.kill();
+        let _ = child.wait();
+        Err(if timed_out {
+            ProbeFailure::TimedOut
+        } else {
+            ProbeFailure::Failed
+        })
+    }
+}
 
 /// The host's clocks. Monotonic time counts from [`SystemClock::start`].
 #[derive(Debug, Clone, Copy)]
@@ -130,14 +226,35 @@ impl<T: Send + 'static> ObservationThread<T> {
 /// process works in its run's directory with piped stdin and stdout; stderr
 /// is discarded, and a process whose exit future is dropped is killed.
 /// Pi loads Ren's extension, published to `pi` before each start.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct ProcessHost {
     pi: Option<PiCache>,
+    /// The host's search path, which a toolset's folder goes before.
+    search_path: Vec<PathBuf>,
+    tools: ToolStore<()>,
 }
 
 impl ProcessHost {
-    pub fn new(pi: Option<PiCache>) -> Self {
-        Self { pi }
+    pub fn new(pi: Option<PiCache>, search_path: Vec<PathBuf>, tools: ToolStore<()>) -> Self {
+        Self {
+            pi,
+            search_path,
+            tools,
+        }
+    }
+
+    /// The search path a process with `tools` gets: their folder, then the
+    /// host's. `None` leaves the inherited one.
+    fn search_path_with(&self, tools: &RunTools) -> io::Result<Option<std::ffi::OsString>> {
+        tools
+            .bin()
+            .map(|bin| {
+                std::env::join_paths(
+                    std::iter::once(bin.to_path_buf()).chain(self.search_path.iter().cloned()),
+                )
+                .map_err(io::Error::other)
+            })
+            .transpose()
     }
 
     fn start(mut command: std::process::Command, workdir: &Path) -> io::Result<AgentProcess> {
@@ -148,11 +265,22 @@ impl ProcessHost {
             .stderr(Stdio::null());
         let mut command = tokio::process::Command::from(command);
         command.kill_on_drop(true);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the one sanctioned place that starts agent processes"
-        )]
-        let mut child = command.spawn()?;
+        // A program installed a moment ago can still be open in a process
+        // that is being started ("text file busy"): try again briefly.
+        let mut tries = 0;
+        let mut child = loop {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the one sanctioned place that starts agent processes"
+            )]
+            match command.spawn() {
+                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => break other?,
+            }
+        };
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(io::Error::other("the agent's pipes were not opened"));
         };
@@ -317,7 +445,26 @@ impl AgentHost for ProcessHost {
         Ok(())
     }
 
-    fn spawn(&self, plan: &LaunchPlan, workdir: &Workdir) -> io::Result<AgentProcess> {
+    fn tools(&self) -> RunTools {
+        match self.tools.current() {
+            Ok(toolset) if toolset.generation() == Generation::NONE => RunTools::Empty,
+            Ok(toolset) => RunTools::Toolset {
+                generation: toolset.generation(),
+                bin: self.tools.bin(toolset.generation()),
+            },
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the tool store; runs start without its tools");
+                RunTools::Unreadable
+            }
+        }
+    }
+
+    fn spawn(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
         let extension = if plan.loads_pi_extension() {
             let cache = self.pi.as_ref().ok_or_else(|| {
                 io::Error::other("set XDG_CACHE_HOME or HOME for the Pi extension cache")
@@ -326,13 +473,119 @@ impl AgentHost for ProcessHost {
         } else {
             None
         };
-        Self::start(plan.command(extension.as_deref(), &[]), workdir.as_path())
+        let mut command = plan.command(extension.as_deref(), &[]);
+        if let Some(path) = self.search_path_with(tools)? {
+            command.env("PATH", path);
+        }
+        Self::start(command, workdir.as_path())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessHost, RandomIds, SystemClock};
+    use super::{HostTools, ProcessHost, RandomIds, SystemClock};
+    use crate::tools::ToolStore;
+    use ren_depot::{
+        Depot, ToolHost,
+        package::PackageId,
+        provision::{Found, Provision},
+        source::Platform,
+        toolset::Toolset,
+        version::{ObservedVersion, ProbeFailure},
+    };
+    use ren_supervisor::RunTools;
+
+    #[cfg(unix)]
+    fn script(dir: &std::path::Path, name: &str, body: &str, mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_tools_find_executables_on_their_path_and_read_versions() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        // Not executable here, so the next folder's `node` is the one found.
+        script(first.path(), "node", "echo v1.0.0", 0o644);
+        let node = script(second.path(), "node", "echo v22.17.1", 0o755);
+        script(second.path(), "jq", "exit 3", 0o755);
+        let tools = HostTools::new(vec![first.path().into(), second.path().into()]);
+        let depot = Depot::builtin().unwrap();
+        let provision = |id: PackageId| depot.provision(&tools, depot.package(&id).unwrap());
+        assert_eq!(
+            provision(PackageId::NODE),
+            Provision::System(Found {
+                path: node,
+                version: ObservedVersion::Read("22.17.1".parse().unwrap()),
+            })
+        );
+        assert!(matches!(
+            provision(PackageId::JQ),
+            Provision::System(Found {
+                version: ObservedVersion::Unread(ProbeFailure::Failed),
+                ..
+            })
+        ));
+        assert_eq!(provision(PackageId::BUN), Provision::Missing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runs_get_the_current_toolset_first_on_their_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = || ToolStore::without_downloads(dir.path().join("tools"));
+        let host = ProcessHost::new(None, vec!["/usr/bin".into(), "/bin".into()], store());
+        // Nothing installed: the inherited path is left alone.
+        assert_eq!(host.tools(), RunTools::Empty);
+        assert_eq!(host.search_path_with(&RunTools::Empty).unwrap(), None);
+
+        let depot = Depot::builtin().unwrap();
+        let empty = Toolset::empty();
+        let plan = empty
+            .plan(
+                &depot,
+                Platform::LinuxX64,
+                &std::collections::BTreeSet::new(),
+            )
+            .unwrap();
+        let one = store().activate(plan).unwrap();
+        let tools = host.tools();
+        let bin = dir.path().join("tools/generations/1/bin");
+        assert_eq!(
+            tools,
+            RunTools::Toolset {
+                generation: one.generation(),
+                bin: bin.clone(),
+            }
+        );
+        assert_eq!(
+            host.search_path_with(&tools).unwrap(),
+            Some(std::env::join_paths([bin, "/usr/bin".into(), "/bin".into()]).unwrap())
+        );
+
+        // A current link to a generation that is not there is unreadable,
+        // never taken for no tools.
+        std::fs::remove_file(dir.path().join("tools/current")).unwrap();
+        std::os::unix::fs::symlink("generations/9", dir.path().join("tools/current")).unwrap();
+        assert_eq!(host.tools(), RunTools::Unreadable);
+        assert_eq!(RunTools::Unreadable.generation(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_that_does_not_answer_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let slow = script(dir.path(), "slow", "exec sleep 30", 0o755);
+        let tools = HostTools::new(vec![dir.path().into()]);
+        assert_eq!(
+            tools.probe(&slow, &["--version"]),
+            Err(ProbeFailure::TimedOut)
+        );
+    }
     use ren_supervisor::{AgentHost, FileListing, PathKind, WalkLimits};
 
     #[test]
@@ -353,7 +606,11 @@ mod tests {
             std::fs::write(root.join(file), "x").unwrap();
         }
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
-        let host = ProcessHost::new(None);
+        let host = ProcessHost::new(
+            None,
+            Vec::new(),
+            ToolStore::without_downloads(root.join("tools")),
+        );
         let mut found: Vec<(String, PathKind)> = host
             .files(root, FileListing::LIMITS)
             .unwrap()

@@ -8,4 +8,5 @@ pub mod runs;
 pub mod serve;
 pub mod service;
 pub mod tail;
+pub mod tools;
 pub mod users;

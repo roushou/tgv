@@ -2,21 +2,30 @@
 use crate::Cli;
 use crate::client::GatewayChoice;
 use crate::style::{Styling, Tone};
-use ren_daemon::config::Config;
+use ren_daemon::config::{Config, ToolsOptions};
+use ren_daemon::host::HostTools;
+use ren_depot::{
+    Surveyed, ToolHost,
+    package::{Kind, PackageId, Requirement},
+    provision::{Fit, Provision},
+    version::ObservedVersion,
+};
 use ren_gateway::{
     Environment,
     build::{Build, Comparison, Revision},
 };
 use ren_harness::{
+    Harness,
     endpoint::{GatewayEndpoint, UserToken},
     host::HostEnv,
 };
-use ren_protocol::label::Stored;
+use ren_protocol::label::{Labeled, Stored};
 use ren_recorder::caller::CallerKind;
 use ren_recorder::retention::RetentionPolicy;
 use ren_store::{Reader, query::CallQuery};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -60,7 +69,7 @@ impl Status {
 
 #[derive(Serialize)]
 pub struct Check {
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
     pub status: Status,
     pub message: String,
 }
@@ -83,7 +92,7 @@ impl Report {
 
     fn add(&mut self, name: &'static str, status: Status, message: impl Into<String>) {
         self.checks.push(Check {
-            name,
+            name: Cow::Borrowed(name),
             status,
             message: message.into(),
         });
@@ -193,18 +202,7 @@ impl Report {
                 Err(error) => report.add("local storage", Status::Failed, error.to_string()),
             }
         }
-        for executable in ["claude", "codex", "pi", "opencode"] {
-            let present = Self::executable_available(env, executable);
-            report.add(
-                executable,
-                if present { Status::Ok } else { Status::Warning },
-                if present {
-                    "executable found on PATH; version and sign-in not checked"
-                } else {
-                    "not found on PATH; install it if you use this client"
-                },
-            );
-        }
+        report.tools(&config.tools, &HostTools::new(env.search_path()));
         let overrides = Self::credential_overrides(env);
         if !overrides.is_empty() {
             report.add(
@@ -308,27 +306,111 @@ impl Report {
         .collect()
     }
 
-    fn executable_available(env: &HostEnv, name: &str) -> bool {
-        env.search_path().into_iter().any(|dir| {
-            #[cfg(windows)]
-            let file = dir.join(format!("{name}.exe"));
-            #[cfg(not(windows))]
-            let file = dir.join(name);
-            std::fs::metadata(file).is_ok_and(|metadata| {
-                if !metadata.is_file() {
-                    return false;
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    metadata.permissions().mode() & 0o111 != 0
-                }
-                #[cfg(not(unix))]
-                {
-                    true
-                }
+    /// One check per package the depot knows: where this host's search path
+    /// has it and which version it reported. A missing client is a warning;
+    /// a missing runtime or utility is one only when a client found here
+    /// needs it.
+    fn tools(&mut self, tools: &ToolsOptions, host: &impl ToolHost) {
+        let depot = match tools.depot() {
+            Ok(depot) => depot,
+            Err(error) => {
+                self.add("tool catalog", Status::Failed, error.to_string());
+                return;
+            }
+        };
+        let survey = depot.survey(host);
+        let present = |id: &PackageId| {
+            survey.iter().any(|surveyed| {
+                surveyed.package.id() == id && !matches!(surveyed.provision, Provision::Missing)
             })
-        })
+        };
+        let requirements: Vec<(Harness, Requirement)> = Harness::ALL
+            .iter()
+            .flat_map(|harness| {
+                harness
+                    .requirements()
+                    .into_iter()
+                    .map(|requirement| (*harness, requirement))
+            })
+            .collect();
+        for Surveyed { package, provision } in &survey {
+            // Requirements of this package from clients installed here.
+            let needed_by: Vec<&(Harness, Requirement)> = requirements
+                .iter()
+                .filter(|(harness, requirement)| {
+                    requirement.package() == package.id()
+                        && harness
+                            .requirements()
+                            .iter()
+                            .filter(|other| other.package() != package.id())
+                            .all(|other| present(other.package()))
+                })
+                .collect();
+            let (status, message) = match provision {
+                Provision::Missing => match package.kind() {
+                    Kind::Client => (
+                        Status::Warning,
+                        "not found on PATH; install it if you use this client".to_owned(),
+                    ),
+                    Kind::Runtime | Kind::Utility if needed_by.is_empty() => (
+                        Status::Skipped,
+                        "not found on PATH; no client found here needs it".to_owned(),
+                    ),
+                    Kind::Runtime | Kind::Utility => (
+                        Status::Warning,
+                        format!(
+                            "not found on PATH; {} needs it",
+                            Self::names(needed_by.iter().map(|(harness, _)| *harness))
+                        ),
+                    ),
+                },
+                Provision::System(found) => {
+                    let outside: Vec<&(Harness, Requirement)> = needed_by
+                        .iter()
+                        .copied()
+                        .filter(|(_, requirement)| {
+                            matches!(
+                                provision.fit(requirement.wants()),
+                                Fit::Outside | Fit::Unverified
+                            )
+                        })
+                        .collect();
+                    let at = found.path.display();
+                    let version = match &found.version {
+                        ObservedVersion::Read(version) => format!("{version} at {at}"),
+                        ObservedVersion::Unparsed(raw) => {
+                            format!("found at {at}; version not read from \"{raw}\"")
+                        }
+                        ObservedVersion::Unread(failure) => {
+                            format!("found at {at}; version not read: {failure}")
+                        }
+                    };
+                    if outside.is_empty() {
+                        (Status::Ok, version)
+                    } else {
+                        (
+                            Status::Warning,
+                            format!(
+                                "{version}; not a version {} accepts",
+                                Self::names(outside.iter().map(|(harness, _)| *harness))
+                            ),
+                        )
+                    }
+                }
+            };
+            self.checks.push(Check {
+                name: Cow::Owned(package.id().to_string()),
+                status,
+                message,
+            });
+        }
+    }
+
+    fn names(harnesses: impl Iterator<Item = Harness>) -> String {
+        harnesses
+            .map(|harness| harness.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 

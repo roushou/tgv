@@ -229,7 +229,7 @@ dependencies = [
  "arrayvec",
  "cc",
  "cfg-if",
- "constant_time_eq",
+ "constant_time_eq 0.4.2",
  "cpufeatures 0.3.1",
 ]
 
@@ -417,6 +417,15 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
+name = "constant_time_eq"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb6feb175df65d0a3ccd3e73484e940d0ac664e8034f0519fd49a93db3071d9"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "core-foundation"
@@ -685,6 +694,16 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
 
 [[package]]
 name = "find-msvc-tools"
@@ -1415,6 +1434,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1727,11 +1758,13 @@ dependencies = [
  "axum",
  "brotli",
  "bytes",
+ "flate2",
  "futures-util",
  "http",
  "http-body",
  "http-body-util",
  "ignore",
+ "ren-depot",
  "ren-gateway",
  "ren-harness",
  "ren-protocol",
@@ -1742,6 +1775,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tar",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1751,6 +1785,21 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
+ "zip",
+]
+
+[[package]]
+name = "ren-depot"
+version = "0.1.0"
+dependencies = [
+ "ren-protocol",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "strum",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -1769,12 +1818,14 @@ dependencies = [
  "http-body",
  "http-body-util",
  "proptest",
+ "ren-depot",
  "ren-harness",
  "ren-protocol",
  "ren-recorder",
  "ren-store",
  "ren-supervisor",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -1798,6 +1849,7 @@ version = "0.1.0"
 dependencies = [
  "http",
  "proptest",
+ "ren-depot",
  "ren-protocol",
  "serde",
  "serde_json",
@@ -1838,6 +1890,7 @@ dependencies = [
  "fastcdc",
  "proptest",
  "regex",
+ "ren-depot",
  "ren-harness",
  "ren-protocol",
  "serde",
@@ -1861,6 +1914,7 @@ dependencies = [
  "clap",
  "futures-util",
  "ren-daemon",
+ "ren-depot",
  "ren-gateway",
  "ren-harness",
  "ren-protocol",
@@ -1886,6 +1940,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
+ "ren-depot",
  "ren-harness",
  "ren-protocol",
  "ren-recorder",
@@ -1907,6 +1962,7 @@ name = "ren-supervisor"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "ren-depot",
  "ren-harness",
  "ren-protocol",
  "ren-recorder",
@@ -2142,6 +2198,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"
@@ -2629,6 +2689,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2929,6 +3000,12 @@ dependencies = [
  "sha1 0.10.7",
  "thiserror",
 ]
+
+[[package]]
+name = "typed-path"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
 
 [[package]]
 name = "typenum"
@@ -3292,6 +3369,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix",
+]
+
+[[package]]
 name = "xtask"
 version = "0.1.0"
 dependencies = [
@@ -3383,6 +3470,20 @@ name = "zeroize"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "zerotrie"
@@ -3415,6 +3516,25 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "zip"
+version = "9.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3476fd497ac8af5b1ec7b51acab7bef380f7e8dd8e0487595bafd839417a302"
+dependencies = [
+ "constant_time_eq 0.6.1",
+ "crc32fast",
+ "flate2",
+ "getrandom 0.4.3",
+ "indexmap",
+ "libc",
+ "memchr",
+ "nix",
+ "typed-path",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

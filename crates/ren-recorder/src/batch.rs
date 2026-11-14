@@ -17,6 +17,7 @@ use crate::{
     time::{Moment, UnixMillis},
 };
 use bytes::Bytes;
+use ren_depot::toolset::Generation;
 use ren_harness::{Harness, attribution::Attribution, drive::DriveEvent, settings::RunSettings};
 use ren_protocol::{
     direction::Direction,
@@ -344,6 +345,9 @@ pub enum RunFact {
         workdir: String,
         /// The settings it started with; each left out is the client's own.
         settings: RunSettings,
+        /// The toolset generation on its search path: 0 when Ren had
+        /// installed none, `None` when the tool store could not be read.
+        toolset: Option<Generation>,
     },
     /// The client opened its conversation, under its own thread id.
     Opened { thread: NativeThreadId },

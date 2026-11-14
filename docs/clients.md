@@ -28,13 +28,15 @@ ren run codex --dry-run
 ```
 
 `doctor` checks local configuration, upstream URL validity, read-only history,
-Unix storage mode bits, client availability on `PATH`, and the daemon's health
-and storage APIs. It reports capture loss separately from storage failures,
+Unix storage mode bits, the clients, runtimes, and utilities on `PATH` (each
+with the version it reports), and the daemon's health and storage APIs. It reports capture loss separately from storage failures,
 and warns when the daemon runs a different build from the CLI (see
 [builds](api.md#builds)).
-It does not execute clients, read credential files, run credential helpers, test
+It runs each program it finds only as `<program> --version`, for at most about
+three seconds; it does not read credential files, run credential helpers, test
 provider connectivity, or consume subscription allowance. Missing clients are
-warnings. Exit code is 0 with no failed checks (warnings can remain), 1 on a failed
+warnings, as is a missing runtime a client found here needs (Pi needs `node`);
+other missing tools are skipped. Exit code is 0 with no failed checks (warnings can remain), 1 on a failed
 check, and 2 for invalid CLI syntax. JSON output includes `ok` and `checks`.
 These are readiness checks, not a full database-integrity or disk-space check.
 
@@ -115,6 +117,73 @@ selected gateway. No inference is sent by `doctor` or launch preflight.
 The launch mechanism follows [Claude's gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol),
 [Codex's per-run configuration overrides](https://learn.chatgpt.com/docs/config-file/config-advanced#one-off-overrides-from-the-cli),
 and [OpenAI authentication for custom providers](https://learn.chatgpt.com/docs/auth#alternative-model-providers).
+
+### Tools for agents
+
+`ren tools` installs runtimes and utilities on this host from the catalog
+built into this Ren: Node.js, Bun, jq, fd, and ripgrep, each at one pinned
+release for Linux x64, Linux arm64, and macOS arm64. The clients themselves and
+git are only found on `PATH`, never installed.
+
+The operator adds packages in the daemon's configuration, in the built-in
+catalog's form: anything published as a prebuilt archive or binary per
+platform, such as a crate's release artifacts. An entry with a built-in
+runtime's or utility's id replaces it (to pin another Node.js release, say);
+clients stay built in, and two packages may not provide one program. The
+configuration is refused at load otherwise.
+
+```toml
+[[tools.package]]
+id = "acme-lint"
+kind = "utility" # or "runtime"
+program = "acme-lint"
+
+[tools.package.release]
+version = "0.3.0"
+
+[[tools.package.release.artifact]]
+platform = "linux_x64" # linux_arm64, macos_arm64
+url = "https://github.com/acme/acme-lint/releases/download/v0.3.0/acme-lint-x86_64-unknown-linux-gnu.tar.gz"
+sha256 = "<64 hex digits; GitHub shows each release asset's digest>"
+format = "tar_gz" # zip, bare
+program_at = "acme-lint-x86_64-unknown-linux-gnu/acme-lint"
+```
+
+Taking an entry out leaves its install in the current generation, listed as
+not in the catalog, until it is removed.
+
+```sh
+ren tools list
+ren tools install node jq
+ren tools remove jq
+ren tools rollback 2    # a new generation holding what generation 2 held
+ren tools which jq      # the program a new run finds
+ren tools gc
+```
+
+Each download comes over https and must match the SHA-256 the catalog pins;
+anything else is refused and nothing changes. Installs go under the data
+directory (`tools/`), each in its own folder, and every change makes a new
+numbered generation, a folder of links (`tools/current/bin`) switched in one
+step. `remove` leaves files in place until `gc` deletes every generation but
+the current one and the installs it does not hold. `list --json` prints the
+same listing as JSON.
+
+Every run Ren starts gets the current generation's `bin` first on its `PATH`,
+then the daemon's own, and records that generation (`toolset` in
+[`/api/runs`](api.md#runs)). A run keeps the generation it started with: a
+later change makes a new generation for later runs, and `gc` keeps every
+generation a run without an end still uses (as the database records it).
+With nothing installed, runs get the daemon's `PATH` unchanged.
+
+The web UI's Tools view shows the same on the daemon's host, filterable by
+name or path and by source: a row per package with the version runs use and
+where it comes from (Ren's install,
+first on their `PATH` over any copy the daemon's `PATH` has, or that copy);
+staged changes, as the versions runs use before and after; the earlier
+toolsets, as history; and which clients need what. Installs, updates, and removals are staged and then
+applied as one generation; it needs the UI server's `REN_CONTROL_TOKEN_FILE`,
+as Sessions does. Over the control API it is [`/control/v1/tools`](api.md#tools).
 
 ## Native endpoints
 

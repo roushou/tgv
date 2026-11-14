@@ -59,7 +59,9 @@
                     ? 'search'
                     : page.route.id === '/sessions'
                       ? 'sessions'
-                      : 'traffic',
+                      : page.route.id === '/tools'
+                        ? 'tools'
+                        : 'traffic',
   );
   /** A session page's ID; reports and turns belong under Recordings too. */
   const sessionId = $derived(
@@ -123,9 +125,11 @@
                       ? 'Search'
                       : view === 'sessions'
                         ? 'Sessions'
-                        : sessionId
-                          ? 'Recording activity'
-                          : 'Traffic',
+                        : view === 'tools'
+                          ? 'Tools'
+                          : sessionId
+                            ? 'Recording activity'
+                            : 'Traffic',
   );
   const gatewayOrigin = $derived(page.data.gatewayUrl);
   // The header names where the gateway runs, not its address.
@@ -275,6 +279,11 @@
         data-sveltekit-preload-data="hover"
         class:active={view === 'usage'}
         aria-current={view === 'usage' ? 'page' : undefined}><Icon name="chart" size={14} />Usage</a
+      >
+      <a
+        href="/tools"
+        class:active={view === 'tools'}
+        aria-current={view === 'tools' ? 'page' : undefined}><Icon name="tool" size={14} />Tools</a
       >
       <a
         href="/recorder"

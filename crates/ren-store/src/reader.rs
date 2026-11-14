@@ -18,6 +18,7 @@ use crate::{
     },
     writer::BlobAccess,
 };
+use ren_depot::toolset::Generation;
 use ren_harness::Harness;
 use ren_harness::attribution::HintSource;
 use ren_harness::tools::CallPurpose;
@@ -292,6 +293,25 @@ impl Reader {
             .await?
             .iter()
             .map(OperatorActionView::from_row)
+            .collect()
+    }
+
+    /// The toolset generations runs without an end were started with:
+    /// generations a collection must keep. A run left by a daemon that
+    /// stopped counts until the next startup marks it recovered.
+    pub async fn live_toolsets(&self) -> Result<Vec<Generation>, StoreError> {
+        let numbers: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT toolset_generation FROM runs WHERE ended_at IS NULL AND toolset_generation IS NOT NULL ORDER BY toolset_generation",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        numbers
+            .into_iter()
+            .map(|number| {
+                u64::try_from(number)
+                    .map(Generation::from)
+                    .map_err(|_| StoreError::Corrupt("run toolset"))
+            })
             .collect()
     }
 

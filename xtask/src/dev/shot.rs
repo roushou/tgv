@@ -28,6 +28,8 @@ pub enum Page {
     Search,
     /// The newest run's session, with its conversation.
     Sessions,
+    /// The tools Ren installs for its agents.
+    Tools,
 }
 
 /// The newest recording and run, which some pages show.
@@ -38,7 +40,7 @@ struct Newest {
 }
 
 impl Page {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Overview,
         Self::Live,
         Self::Traffic,
@@ -47,6 +49,7 @@ impl Page {
         Self::Usage,
         Self::Search,
         Self::Sessions,
+        Self::Tools,
     ];
 
     fn name(self) -> &'static str {
@@ -59,6 +62,7 @@ impl Page {
             Self::Usage => "usage",
             Self::Search => "search",
             Self::Sessions => "sessions",
+            Self::Tools => "tools",
         }
     }
 
@@ -82,6 +86,7 @@ impl Page {
                     .as_ref()
                     .map_or_else(|| "/sessions".into(), |id| format!("/sessions?run={id}")),
             ),
+            Self::Tools => Some("/tools".into()),
         }
     }
 }
@@ -229,7 +234,8 @@ mod tests {
                 | Page::Traffic
                 | Page::Recordings
                 | Page::Usage
-                | Page::Search => assert!(page.path(&none).is_some_and(|p| p.starts_with('/'))),
+                | Page::Search
+                | Page::Tools => assert!(page.path(&none).is_some_and(|p| p.starts_with('/'))),
             }
         }
     }

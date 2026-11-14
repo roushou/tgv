@@ -106,7 +106,7 @@ const JOURNAL_SIZE_LIMIT: i64 = 64 * 1024 * 1024;
 
 impl Store {
     pub(super) const LOCK_FILE: &'static str = "daemon.lock";
-    pub(super) const METADATA_FILE: &'static str = "ren.sqlite3";
+    pub const METADATA_FILE: &'static str = "ren.sqlite3";
     pub(super) const BLOBS_FILE: &'static str = "blobs.sqlite3";
     /// The chunk table's definition, shared with backups.
     pub(super) const CHUNKS_COLUMNS: &'static str = "(hash BLOB PRIMARY KEY, codec TEXT NOT NULL, raw_len INTEGER NOT NULL, data BLOB NOT NULL) WITHOUT ROWID";
@@ -809,9 +809,10 @@ impl MetadataTx<'_> {
                 harness,
                 workdir,
                 settings,
+                toolset,
             } => {
                 sqlx::query(
-                    "INSERT INTO runs(id, operator_session, harness, workdir, started_at, model, effort, approvals) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO runs(id, operator_session, harness, workdir, started_at, model, effort, approvals, toolset_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(session.to_string())
@@ -821,6 +822,7 @@ impl MetadataTx<'_> {
                 .bind(settings.model.as_ref().map(ModelId::as_str))
                 .bind(settings.effort.map(Labeled::label))
                 .bind(settings.approvals.map(Labeled::label))
+                .bind(toolset.and_then(|generation| i64::try_from(generation.number()).ok()))
                 .execute(&mut *self.tx)
                 .await?;
             }

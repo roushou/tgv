@@ -28,6 +28,7 @@ anstyle = "1.0"
 anyhow = "1.0"
 clap.workspace = true
 ren-daemon.workspace = true
+ren-depot.workspace = true
 ren-gateway.workspace = true
 ren-harness.workspace = true
 ren-protocol.workspace = true
