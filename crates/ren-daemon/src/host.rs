@@ -6,6 +6,8 @@
 //! random identities. Components receive them as values; nothing else calls
 //! `SystemTime::now`, `Instant::now`, or `Uuid::new_v4`.
 
+use crate::tools::ToolStore;
+use ren_depot::toolset::Generation;
 use ren_depot::{ToolHost, package::ProgramName, source::Platform, version::ProbeFailure};
 use ren_harness::{launch::LaunchPlan, pi::PiCache};
 use ren_recorder::{
@@ -13,8 +15,8 @@ use ren_recorder::{
     time::{Clock, Moment, Monotonic, UnixMillis},
 };
 use ren_supervisor::{
-    AgentHost, AgentProcess, FoundPath, KillSwitch, Look, PathKind, ProcessExit, WalkLimits,
-    Workdir,
+    AgentHost, AgentProcess, FoundPath, KillSwitch, Look, PathKind, ProcessExit, RunTools,
+    WalkLimits, Workdir,
 };
 use std::future::Future;
 use std::io;
@@ -224,14 +226,35 @@ impl<T: Send + 'static> ObservationThread<T> {
 /// process works in its run's directory with piped stdin and stdout; stderr
 /// is discarded, and a process whose exit future is dropped is killed.
 /// Pi loads Ren's extension, published to `pi` before each start.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct ProcessHost {
     pi: Option<PiCache>,
+    /// The host's search path, which a toolset's folder goes before.
+    search_path: Vec<PathBuf>,
+    tools: ToolStore<()>,
 }
 
 impl ProcessHost {
-    pub fn new(pi: Option<PiCache>) -> Self {
-        Self { pi }
+    pub fn new(pi: Option<PiCache>, search_path: Vec<PathBuf>, tools: ToolStore<()>) -> Self {
+        Self {
+            pi,
+            search_path,
+            tools,
+        }
+    }
+
+    /// The search path a process with `tools` gets: their folder, then the
+    /// host's. `None` leaves the inherited one.
+    fn search_path_with(&self, tools: &RunTools) -> io::Result<Option<std::ffi::OsString>> {
+        tools
+            .bin()
+            .map(|bin| {
+                std::env::join_paths(
+                    std::iter::once(bin.to_path_buf()).chain(self.search_path.iter().cloned()),
+                )
+                .map_err(io::Error::other)
+            })
+            .transpose()
     }
 
     fn start(mut command: std::process::Command, workdir: &Path) -> io::Result<AgentProcess> {
@@ -411,7 +434,26 @@ impl AgentHost for ProcessHost {
         Ok(())
     }
 
-    fn spawn(&self, plan: &LaunchPlan, workdir: &Workdir) -> io::Result<AgentProcess> {
+    fn tools(&self) -> RunTools {
+        match self.tools.current() {
+            Ok(toolset) if toolset.generation() == Generation::NONE => RunTools::Empty,
+            Ok(toolset) => RunTools::Toolset {
+                generation: toolset.generation(),
+                bin: self.tools.bin(toolset.generation()),
+            },
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the tool store; runs start without its tools");
+                RunTools::Unreadable
+            }
+        }
+    }
+
+    fn spawn(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
         let extension = if plan.loads_pi_extension() {
             let cache = self.pi.as_ref().ok_or_else(|| {
                 io::Error::other("set XDG_CACHE_HOME or HOME for the Pi extension cache")
@@ -420,19 +462,27 @@ impl AgentHost for ProcessHost {
         } else {
             None
         };
-        Self::start(plan.command(extension.as_deref(), &[]), workdir.as_path())
+        let mut command = plan.command(extension.as_deref(), &[]);
+        if let Some(path) = self.search_path_with(tools)? {
+            command.env("PATH", path);
+        }
+        Self::start(command, workdir.as_path())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{HostTools, ProcessHost, RandomIds, SystemClock};
+    use crate::tools::ToolStore;
     use ren_depot::{
         Depot, ToolHost,
         package::PackageId,
         provision::{Found, Provision},
+        source::Platform,
+        toolset::Toolset,
         version::{ObservedVersion, ProbeFailure},
     };
+    use ren_supervisor::RunTools;
 
     #[cfg(unix)]
     fn script(dir: &std::path::Path, name: &str, body: &str, mode: u32) -> std::path::PathBuf {
@@ -474,6 +524,48 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn runs_get_the_current_toolset_first_on_their_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = || ToolStore::without_downloads(dir.path().join("tools"));
+        let host = ProcessHost::new(None, vec!["/usr/bin".into(), "/bin".into()], store());
+        // Nothing installed: the inherited path is left alone.
+        assert_eq!(host.tools(), RunTools::Empty);
+        assert_eq!(host.search_path_with(&RunTools::Empty).unwrap(), None);
+
+        let depot = Depot::builtin().unwrap();
+        let empty = Toolset::empty();
+        let plan = empty
+            .plan(
+                &depot,
+                Platform::LinuxX64,
+                &std::collections::BTreeSet::new(),
+            )
+            .unwrap();
+        let one = store().activate(plan).unwrap();
+        let tools = host.tools();
+        let bin = dir.path().join("tools/generations/1/bin");
+        assert_eq!(
+            tools,
+            RunTools::Toolset {
+                generation: one.generation(),
+                bin: bin.clone(),
+            }
+        );
+        assert_eq!(
+            host.search_path_with(&tools).unwrap(),
+            Some(std::env::join_paths([bin, "/usr/bin".into(), "/bin".into()]).unwrap())
+        );
+
+        // A current link to a generation that is not there is unreadable,
+        // never taken for no tools.
+        std::fs::remove_file(dir.path().join("tools/current")).unwrap();
+        std::os::unix::fs::symlink("generations/9", dir.path().join("tools/current")).unwrap();
+        assert_eq!(host.tools(), RunTools::Unreadable);
+        assert_eq!(RunTools::Unreadable.generation(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_probe_that_does_not_answer_times_out() {
         let dir = tempfile::tempdir().unwrap();
         let slow = script(dir.path(), "slow", "exec sleep 30", 0o755);
@@ -503,7 +595,11 @@ mod tests {
             std::fs::write(root.join(file), "x").unwrap();
         }
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
-        let host = ProcessHost::new(None);
+        let host = ProcessHost::new(
+            None,
+            Vec::new(),
+            ToolStore::without_downloads(root.join("tools")),
+        );
         let mut found: Vec<(String, PathKind)> = host
             .files(root, FileListing::LIMITS)
             .unwrap()

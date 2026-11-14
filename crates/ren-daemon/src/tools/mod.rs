@@ -72,25 +72,27 @@ pub struct Collected {
 }
 
 /// The installs and toolset generations under one folder.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ToolStore<F> {
     root: PathBuf,
     fetch: F,
 }
 
-impl<F: Fetch> ToolStore<F> {
+impl ToolStore<()> {
     /// The folder under the data directory the store lives in.
     pub const FOLDER: &str = "tools";
-    /// The most a release's download may be.
-    pub const DOWNLOAD_LIMIT: ByteLimit = ByteLimit::new(512 * 1024 * 1024);
 
-    pub fn new(root: impl Into<PathBuf>, fetch: F) -> Self {
+    /// A store that cannot download: it reads generations and activates
+    /// plans whose installs are already in the store.
+    pub fn without_downloads(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            fetch,
+            fetch: (),
         }
     }
+}
 
+impl<F> ToolStore<F> {
     fn installed_at(&self, dir: &RelativePath) -> PathBuf {
         dir.parts()
             .fold(self.root.join("store"), |path, part| path.join(part))
@@ -136,6 +138,135 @@ impl<F: Fetch> ToolStore<F> {
             return Err(ToolStoreError::Corrupt(generation));
         }
         Ok(Toolset::restore(stored.generation, stored.installs))
+    }
+
+    /// Make `plan`'s toolset the current generation. Every install it adds
+    /// must be in the store; a plan made from an older generation is
+    /// refused.
+    pub fn activate(&self, plan: Plan) -> Result<Toolset, ToolStoreError> {
+        if let Some((missing, _)) = plan
+            .fetches()
+            .iter()
+            .find(|(install, _)| !self.has(install))
+        {
+            return Err(ToolStoreError::NotInstalled(missing.package.clone()));
+        }
+        let current = self.current()?;
+        let next = plan.apply(&current)?;
+        let generations = self.root.join("generations");
+        let partial = generations.join(format!(".{}.partial", next.generation()));
+        let dir = self.generation_dir(next.generation());
+        // Leftovers of an activation that did not finish; never current,
+        // which is older.
+        for leftover in [&partial, &dir] {
+            let _ = fs::remove_dir_all(leftover);
+        }
+        fs::create_dir_all(partial.join("bin")).map_err(ToolStoreError::io("make a generation"))?;
+        for link in next.links() {
+            let target = link
+                .target
+                .parts()
+                .fold(PathBuf::from("../../../store"), |path, part| {
+                    path.join(part)
+                });
+            Self::link(&target, &partial.join("bin").join(link.name.as_str()))?;
+        }
+        let stored = StoredToolset {
+            generation: next.generation(),
+            installs: next.installs().cloned().collect(),
+        };
+        let json = serde_json::to_vec_pretty(&stored).map_err(|error| ToolStoreError::Io {
+            action: "write a generation",
+            source: io::Error::other(error),
+        })?;
+        fs::write(partial.join("toolset.json"), json)
+            .map_err(ToolStoreError::io("write a generation"))?;
+        fs::rename(&partial, &dir).map_err(ToolStoreError::io("make a generation"))?;
+        let switching = self.root.join(".current.partial");
+        let _ = fs::remove_file(&switching);
+        Self::link(
+            &Path::new("generations").join(next.generation().to_string()),
+            &switching,
+        )?;
+        fs::rename(&switching, self.root.join("current"))
+            .map_err(ToolStoreError::io("switch the current generation"))?;
+        Ok(next)
+    }
+
+    /// Remove every generation except the current one and those in `live`
+    /// (generations runs still use), and every install none of them holds.
+    pub fn collect(&self, live: &[Generation]) -> Result<Collected, ToolStoreError> {
+        let current = self.current()?;
+        let mut kept = vec![current.clone()];
+        for generation in live {
+            if *generation != current.generation() && *generation != Generation::NONE {
+                kept.push(self.generation(*generation)?);
+            }
+        }
+        let keep: BTreeSet<Generation> = kept.iter().map(Toolset::generation).collect();
+        let retained = Toolset::retained(&kept.iter().collect::<Vec<_>>());
+        let mut collected = Collected::default();
+
+        for (name, path) in Self::entries(&self.root.join("generations"))? {
+            match name.parse::<Generation>() {
+                Ok(generation) if keep.contains(&generation) => continue,
+                Ok(generation) => collected.generations.push(generation),
+                Err(_) => {}
+            }
+            fs::remove_dir_all(path).map_err(ToolStoreError::io("remove a generation"))?;
+        }
+        for (package, package_dir) in Self::entries(&self.root.join("store"))? {
+            for (version, path) in Self::entries(&package_dir)? {
+                let dir: Option<RelativePath> = format!("{package}/{version}").parse().ok();
+                if dir.as_ref().is_some_and(|dir| retained.contains(dir)) {
+                    continue;
+                }
+                fs::remove_dir_all(&path).map_err(ToolStoreError::io("remove an install"))?;
+                collected.installs.extend(dir);
+            }
+            // Only succeeds once the package has no installs left.
+            let _ = fs::remove_dir(&package_dir);
+        }
+        collected.generations.sort();
+        collected.installs.sort();
+        Ok(collected)
+    }
+
+    /// The entries of `dir` by name; none when it does not exist.
+    fn entries(dir: &Path) -> Result<Vec<(String, PathBuf)>, ToolStoreError> {
+        let read = match fs::read_dir(dir) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            other => other.map_err(ToolStoreError::io("list the tool store"))?,
+        };
+        let mut entries = Vec::new();
+        for entry in read {
+            let entry = entry.map_err(ToolStoreError::io("list the tool store"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            entries.push((name, entry.path()));
+        }
+        Ok(entries)
+    }
+
+    #[cfg(unix)]
+    fn link(target: &Path, at: &Path) -> Result<(), ToolStoreError> {
+        std::os::unix::fs::symlink(target, at).map_err(ToolStoreError::io("make a link"))
+    }
+
+    #[cfg(not(unix))]
+    fn link(_target: &Path, _at: &Path) -> Result<(), ToolStoreError> {
+        Err(ToolStoreError::Unsupported)
+    }
+}
+
+impl<F: Fetch> ToolStore<F> {
+    /// The most a release's download may be.
+    pub const DOWNLOAD_LIMIT: ByteLimit = ByteLimit::new(512 * 1024 * 1024);
+
+    pub fn new(root: impl Into<PathBuf>, fetch: F) -> Self {
+        Self {
+            root: root.into(),
+            fetch,
+        }
     }
 
     /// Install every release `plan` adds that the store lacks, one at a
@@ -254,123 +385,6 @@ impl<F: Fetch> ToolStore<F> {
         .await
         .map_err(|_| HostFailure::Filesystem)?
         .map_err(|_| HostFailure::Filesystem)
-    }
-
-    /// Make `plan`'s toolset the current generation. Every install it adds
-    /// must be in the store; a plan made from an older generation is
-    /// refused.
-    pub fn activate(&self, plan: Plan) -> Result<Toolset, ToolStoreError> {
-        if let Some((missing, _)) = plan
-            .fetches()
-            .iter()
-            .find(|(install, _)| !self.has(install))
-        {
-            return Err(ToolStoreError::NotInstalled(missing.package.clone()));
-        }
-        let current = self.current()?;
-        let next = plan.apply(&current)?;
-        let generations = self.root.join("generations");
-        let partial = generations.join(format!(".{}.partial", next.generation()));
-        let dir = self.generation_dir(next.generation());
-        // Leftovers of an activation that did not finish; never current,
-        // which is older.
-        for leftover in [&partial, &dir] {
-            let _ = fs::remove_dir_all(leftover);
-        }
-        fs::create_dir_all(partial.join("bin")).map_err(ToolStoreError::io("make a generation"))?;
-        for link in next.links() {
-            let target = link
-                .target
-                .parts()
-                .fold(PathBuf::from("../../../store"), |path, part| {
-                    path.join(part)
-                });
-            Self::link(&target, &partial.join("bin").join(link.name.as_str()))?;
-        }
-        let stored = StoredToolset {
-            generation: next.generation(),
-            installs: next.installs().cloned().collect(),
-        };
-        let json = serde_json::to_vec_pretty(&stored).map_err(|error| ToolStoreError::Io {
-            action: "write a generation",
-            source: io::Error::other(error),
-        })?;
-        fs::write(partial.join("toolset.json"), json)
-            .map_err(ToolStoreError::io("write a generation"))?;
-        fs::rename(&partial, &dir).map_err(ToolStoreError::io("make a generation"))?;
-        let switching = self.root.join(".current.partial");
-        let _ = fs::remove_file(&switching);
-        Self::link(
-            &Path::new("generations").join(next.generation().to_string()),
-            &switching,
-        )?;
-        fs::rename(&switching, self.root.join("current"))
-            .map_err(ToolStoreError::io("switch the current generation"))?;
-        Ok(next)
-    }
-
-    /// Remove every generation except the current one and those in `live`
-    /// (generations runs still use), and every install none of them holds.
-    pub fn collect(&self, live: &[Generation]) -> Result<Collected, ToolStoreError> {
-        let current = self.current()?;
-        let mut kept = vec![current.clone()];
-        for generation in live {
-            if *generation != current.generation() && *generation != Generation::NONE {
-                kept.push(self.generation(*generation)?);
-            }
-        }
-        let keep: BTreeSet<Generation> = kept.iter().map(Toolset::generation).collect();
-        let retained = Toolset::retained(&kept.iter().collect::<Vec<_>>());
-        let mut collected = Collected::default();
-
-        for (name, path) in Self::entries(&self.root.join("generations"))? {
-            match name.parse::<Generation>() {
-                Ok(generation) if keep.contains(&generation) => continue,
-                Ok(generation) => collected.generations.push(generation),
-                Err(_) => {}
-            }
-            fs::remove_dir_all(path).map_err(ToolStoreError::io("remove a generation"))?;
-        }
-        for (package, package_dir) in Self::entries(&self.root.join("store"))? {
-            for (version, path) in Self::entries(&package_dir)? {
-                let dir: Option<RelativePath> = format!("{package}/{version}").parse().ok();
-                if dir.as_ref().is_some_and(|dir| retained.contains(dir)) {
-                    continue;
-                }
-                fs::remove_dir_all(&path).map_err(ToolStoreError::io("remove an install"))?;
-                collected.installs.extend(dir);
-            }
-            // Only succeeds once the package has no installs left.
-            let _ = fs::remove_dir(&package_dir);
-        }
-        collected.generations.sort();
-        collected.installs.sort();
-        Ok(collected)
-    }
-
-    /// The entries of `dir` by name; none when it does not exist.
-    fn entries(dir: &Path) -> Result<Vec<(String, PathBuf)>, ToolStoreError> {
-        let read = match fs::read_dir(dir) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            other => other.map_err(ToolStoreError::io("list the tool store"))?,
-        };
-        let mut entries = Vec::new();
-        for entry in read {
-            let entry = entry.map_err(ToolStoreError::io("list the tool store"))?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            entries.push((name, entry.path()));
-        }
-        Ok(entries)
-    }
-
-    #[cfg(unix)]
-    fn link(target: &Path, at: &Path) -> Result<(), ToolStoreError> {
-        std::os::unix::fs::symlink(target, at).map_err(ToolStoreError::io("make a link"))
-    }
-
-    #[cfg(not(unix))]
-    fn link(_target: &Path, _at: &Path) -> Result<(), ToolStoreError> {
-        Err(ToolStoreError::Unsupported)
     }
 }
 

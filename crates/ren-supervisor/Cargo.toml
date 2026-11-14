@@ -12,6 +12,7 @@ description = "Agent runs for the Ren LLM gateway: clients started in a folder a
 # CLI parser (docs/architecture.md); starting processes is the AgentHost port.
 [dependencies]
 futures-util.workspace = true
+ren-depot.workspace = true
 ren-harness.workspace = true
 ren-protocol.workspace = true
 ren-recorder.workspace = true

@@ -11,6 +11,7 @@ pub mod tools;
 
 use crate::config::RuntimeConfig;
 use crate::host::{ObservationThread, ProcessHost, RandomIds, SystemClock};
+use crate::tools::ToolStore;
 use ren_gateway::{
     Build, ControlToken, Gateway, ManagementSetup, ReqwestUpstream, Shutdown, Stopped,
     control::Controls,
@@ -186,7 +187,7 @@ impl Daemon {
         )?;
         let mut worker =
             ObservationThread::start(task.run()).map_err(DaemonError::ObservationThread)?;
-        let runs = match Self::runs(config, address, &recorder, &ids) {
+        let runs = match Self::runs(config, data_dir, address, &recorder, &ids) {
             Ok(runs) => runs,
             Err(error) => {
                 drop(recorder);
@@ -290,6 +291,7 @@ impl Daemon {
     /// clients send their model traffic to this daemon's own listener.
     fn runs(
         config: &RuntimeConfig,
+        data_dir: &std::path::Path,
         address: SocketAddr,
         recorder: &Recorder,
         ids: &Arc<dyn IdSource>,
@@ -311,7 +313,11 @@ impl Daemon {
         };
         Ok(Some(Supervisor::new(
             options,
-            ProcessHost::new(config.pi_cache().cloned()),
+            ProcessHost::new(
+                config.pi_cache().cloned(),
+                config.agent_path().to_vec(),
+                ToolStore::without_downloads(data_dir.join(ToolStore::FOLDER)),
+            ),
             ids.clone(),
             recorder.clone(),
         )?))

@@ -140,7 +140,12 @@ step. `remove` leaves files in place until `gc` deletes every generation but
 the current one and the installs it does not hold. `list --json` prints the
 same listing as JSON.
 
-Runs do not use these tools yet: agents still get the daemon's `PATH`.
+Every run Ren starts gets the current generation's `bin` first on its `PATH`,
+then the daemon's own, and records that generation (`toolset` in
+[`/api/runs`](api.md#runs)). A run keeps the generation it started with: a
+later change makes a new generation for later runs, and `gc` keeps every
+generation a run without an end still uses (as the database records it).
+With nothing installed, runs get the daemon's `PATH` unchanged.
 
 ## Native endpoints
 

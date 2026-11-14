@@ -9,6 +9,7 @@
     reason = "integration tests are a shell: helpers outside #[test] fail loudly, and scripted agents are spawned tasks"
 )]
 
+use ren_depot::toolset::Generation;
 use ren_harness::{
     Harness,
     drive::{ApprovalId, Decision, Prompt},
@@ -28,7 +29,7 @@ use ren_recorder::{
 use ren_store::{Reader, Store, query::PageLimit, view::RunView};
 use ren_supervisor::{
     AgentHost, AgentProcess, CommandError, Conversation, FileQuery, FoundPath, KillSignal,
-    KillSwitch, Look, PathKind, ProcessExit, RunCommand, RunRefused, RunState, RunUpdate,
+    KillSwitch, Look, PathKind, ProcessExit, RunCommand, RunRefused, RunState, RunTools, RunUpdate,
     StartError, Supervisor, SupervisorOptions, WalkLimits, Workdir,
 };
 use serde_json::{Value, json};
@@ -74,6 +75,8 @@ struct FakeHost {
     script: Script,
     spawn_fails: bool,
     spawned: Arc<Mutex<Vec<Spawned>>>,
+    /// The tools each spawned agent was given, in order.
+    tools_given: Arc<Mutex<Vec<RunTools>>>,
     /// Folders made, scratch runs' marked as repositories.
     made: Arc<Mutex<Vec<(PathBuf, bool)>>>,
     /// Folders walked for a file search, in order.
@@ -86,6 +89,7 @@ impl FakeHost {
             script,
             spawn_fails: false,
             spawned: Arc::default(),
+            tools_given: Arc::default(),
             made: Arc::default(),
             walked: Arc::default(),
         }
@@ -153,10 +157,23 @@ impl AgentHost for FakeHost {
         Ok(())
     }
 
-    fn spawn(&self, plan: &LaunchPlan, workdir: &Workdir) -> io::Result<AgentProcess> {
+    fn tools(&self) -> RunTools {
+        RunTools::Toolset {
+            generation: Generation::from(4),
+            bin: "/data/tools/generations/4/bin".into(),
+        }
+    }
+
+    fn spawn(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
         if self.spawn_fails {
             return Err(io::Error::from(io::ErrorKind::NotFound));
         }
+        self.tools_given.lock().unwrap().push(tools.clone());
         let command = plan.command(None, &[]);
         let arguments: Vec<String> = command
             .get_args()
@@ -576,6 +593,7 @@ fn prompt() -> RunCommand {
 async fn runs_a_turn_through_an_approval_and_stops() {
     let host = FakeHost::new(Script::Codex);
     let spawned = host.spawned.clone();
+    let tools_given = host.tools_given.clone();
     let supervised = supervise(host).await;
     let supervisor = &supervised.supervisor;
     let mut updates = supervisor.subscribe();
@@ -592,6 +610,11 @@ async fn runs_a_turn_through_an_approval_and_stops() {
     let (arguments, workdir) = spawned.lock().unwrap()[0].clone();
     assert_eq!(arguments[..3], ["app-server", "--listen", "stdio://"]);
     assert_eq!(workdir, PathBuf::from("/work/acme"));
+    // The run got the host's current toolset.
+    assert_eq!(
+        tools_given.lock().unwrap()[0].generation(),
+        Some(Generation::from(4))
+    );
     state(&mut updates, |s| matches!(s, RunState::Idle { .. })).await;
 
     supervisor.command(run, prompt()).await.unwrap();

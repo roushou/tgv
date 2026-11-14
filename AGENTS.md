@@ -320,7 +320,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `ClientStatus` (`client`) say whether a run can start
   with each client here; `AgentHost` (`host`) is the port for resolving paths,
   looking in folders, making folders (a scratch run's as a repository),
-  finding programs, and starting processes, which tests
+  finding programs, the current toolset a process gets (`RunTools`: a
+  generation and its folder, none, or an unreadable store, recorded as such
+  with the run), and starting processes, which tests
   fill with
   scripted in-memory agents. `SupervisorTask` is the shell: one task reads every
   agent's stdout, writes its stdin, and waits for its exit, records each run

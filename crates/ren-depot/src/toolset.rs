@@ -81,6 +81,12 @@ impl Generation {
     }
 }
 
+impl From<u64> for Generation {
+    fn from(number: u64) -> Self {
+        Self(number)
+    }
+}
+
 impl FromStr for Generation {
     type Err = ParseIntError;
 

@@ -371,6 +371,10 @@ impl Config {
                 Keys::Env(env) => PiCache::locate(env).ok(),
                 Keys::Unchecked => None,
             },
+            agent_path: match keys {
+                Keys::Env(env) => env.search_path(),
+                Keys::Unchecked => Vec::new(),
+            },
             revision: self.revision()?,
         })
     }
@@ -479,6 +483,8 @@ pub struct RuntimeConfig {
     /// Where driven Pi processes find Ren's extension, when the host
     /// environment names a cache.
     pi_cache: Option<PiCache>,
+    /// The host's search path, which a run's toolset folder is put before.
+    agent_path: Vec<PathBuf>,
     revision: String,
 }
 
@@ -501,6 +507,10 @@ impl RuntimeConfig {
     pub fn run_places(&self) -> &RunPlaces {
         &self.run_places
     }
+    pub fn agent_path(&self) -> &[PathBuf] {
+        &self.agent_path
+    }
+
     pub fn pi_cache(&self) -> Option<&PiCache> {
         self.pi_cache.as_ref()
     }

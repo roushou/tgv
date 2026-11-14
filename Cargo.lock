@@ -1888,6 +1888,7 @@ dependencies = [
  "fastcdc",
  "proptest",
  "regex",
+ "ren-depot",
  "ren-harness",
  "ren-protocol",
  "serde",
@@ -1937,6 +1938,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytes",
+ "ren-depot",
  "ren-harness",
  "ren-protocol",
  "ren-recorder",
@@ -1958,6 +1960,7 @@ name = "ren-supervisor"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "ren-depot",
  "ren-harness",
  "ren-protocol",
  "ren-recorder",

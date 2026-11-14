@@ -4,6 +4,7 @@
 //! verbatim instead of failing the query.
 
 use crate::{StoreError, query::Cursor};
+use ren_depot::toolset::Generation;
 use ren_harness::Harness;
 use ren_harness::attribution::{HintIssue, HintSource};
 use ren_harness::tools::CallPurpose;
@@ -623,10 +624,14 @@ pub struct RunView {
     pub model: Option<String>,
     pub effort: Option<Stored<Effort>>,
     pub approvals: Option<Stored<ApprovalPolicy>>,
+    /// The toolset generation on its search path: 0 when Ren had installed
+    /// none; `None` when unknown (the tool store was unreadable, or the run
+    /// was recorded before this was).
+    pub toolset: Option<Generation>,
 }
 
 impl RunView {
-    pub(super) const SELECT: &'static str = "SELECT id, operator_session, harness, workdir, started_at, thread, ended_at, run_end, exit_kind, exit_value, archived_at, model, effort, approvals, (SELECT sessions.id FROM sessions WHERE sessions.native_id = runs.thread ORDER BY sessions.first_seen, sessions.id LIMIT 1) AS session FROM runs";
+    pub(super) const SELECT: &'static str = "SELECT id, operator_session, harness, workdir, started_at, thread, ended_at, run_end, exit_kind, exit_value, archived_at, model, effort, approvals, toolset_generation, (SELECT sessions.id FROM sessions WHERE sessions.native_id = runs.thread ORDER BY sessions.first_seen, sessions.id LIMIT 1) AS session FROM runs";
 
     pub(super) fn from_row(row: &SqliteRow) -> Result<Self, StoreError> {
         let row = Columns(row);
@@ -653,6 +658,12 @@ impl RunView {
             model: row.text("model")?,
             effort: row.optional_label("effort")?,
             approvals: row.optional_label("approvals")?,
+            toolset: row
+                .0
+                .try_get::<Option<i64>, _>("toolset_generation")?
+                .map(|number| u64::try_from(number).map(Generation::from))
+                .transpose()
+                .map_err(|_| StoreError::Corrupt("run toolset"))?,
         })
     }
 }

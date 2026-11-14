@@ -16,6 +16,7 @@ blake3.workspace = true
 bytes.workspace = true
 fastcdc = "5.0.0"
 regex = { version = "1.13", default-features = false, features = ["std", "perf", "unicode-perl"] }
+ren-depot.workspace = true
 ren-harness.workspace = true
 ren-protocol.workspace = true
 serde.workspace = true

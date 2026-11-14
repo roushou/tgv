@@ -98,9 +98,12 @@ below says whether it is built. Record every deviation here, with its reason.
 2. **Store and generations.** Built: the pure core (`source`, `toolset`,
    `job`) and the daemon's `tools::ToolStore`, which carries out install jobs
    (download through `Fetch`, verify, unpack, place) and activates, restores,
-   and collects generations under `<data>/tools`. Not built: a run's search
-   path from its generation, and runs recording their generation (a
-   `ren-store` migration); nothing calls the store yet.
+   and collects generations under `<data>/tools`. Runs get the current
+   generation's `bin` first on their `PATH` (`AgentHost::tools`,
+   `RunTools`) and record it (`runs.toolset_generation`, migration 0011;
+   `None` when the store was unreadable); `ren tools gc` keeps generations
+   runs without an end use (`Reader::live_toolsets`). Verified by unit and
+   store tests; not yet in a live run through the daemon.
 3. **Catalog sources.** Built. `crates/ren-depot/src/catalog.toml` pins
    node 26.13.1, bun 1.4.4, jq 1.8.2, fd 10.5.2, and ripgrep 15.2.0 for
    each platform; `Depot::builtin` reads it. Each was installed for real on

@@ -23,7 +23,7 @@ pub mod workdir;
 
 pub use client::{Client, ClientStatus};
 pub use files::{FileListing, FileMatch, FileQuery, FoundPath, PathKind, WalkLimits};
-pub use host::{AgentHost, AgentProcess, KillSignal, KillSwitch};
+pub use host::{AgentHost, AgentProcess, KillSignal, KillSwitch, RunTools};
 pub use models::ModelsError;
 pub use project::{Look, PlaceKind, Project, ProjectGit, Search};
 pub use run::{Approvals, Delivery, ProcessExit, RunCommand, RunRefused, RunState, Waiting};

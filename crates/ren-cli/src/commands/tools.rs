@@ -17,6 +17,7 @@ use ren_depot::{
     toolset::{Change, Toolset},
     version::ObservedVersion,
 };
+use ren_store::{Reader, Store};
 use serde::Serialize;
 use std::{collections::BTreeSet, process::ExitCode};
 
@@ -36,8 +37,8 @@ enum ToolsAction {
     Install(Packages),
     /// Leave packages out of a new generation. Their files stay until `gc`.
     Remove(Packages),
-    /// Delete every generation but the current one, and every install it
-    /// does not hold.
+    /// Delete every generation but the current one and those runs still
+    /// use, and every install none of them holds.
     Gc,
 }
 
@@ -78,9 +79,8 @@ impl ToolsCmd {
     pub async fn run(self, ctx: &Context) -> Result<ExitCode> {
         let depot = Depot::builtin()?;
         let config = ctx.config()?;
-        let root = ctx
-            .data_dir(&config)?
-            .join(ToolStore::<ReqwestFetch>::FOLDER);
+        let data_dir = ctx.data_dir(&config)?;
+        let root = data_dir.join(ToolStore::FOLDER);
         let store = ToolStore::new(root, ReqwestFetch::new().context("cannot start downloads")?);
         let current = store.current()?;
         match self.action {
@@ -115,7 +115,21 @@ impl ToolsCmd {
                 Self::change(&store, &depot, &current, &wanted).await
             }
             ToolsAction::Gc => {
-                let collected = store.collect(&[])?;
+                // Generations runs still use stay. Without a database, no
+                // run was ever recorded here.
+                let live = if data_dir.join(Store::METADATA_FILE).exists() {
+                    Reader::open(&data_dir, 1)
+                        .await?
+                        .live_toolsets()
+                        .await
+                        .context("cannot read which generations runs use")?
+                } else {
+                    Vec::new()
+                };
+                let collected = store.collect(&live)?;
+                for generation in &live {
+                    println!("kept generation {generation}: a run uses it");
+                }
                 for generation in &collected.generations {
                     println!("removed generation {generation}");
                 }

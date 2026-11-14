@@ -5,7 +5,7 @@
 use ren_harness::launch::LaunchPlan;
 use ren_supervisor::{
     AgentHost, AgentProcess, FoundPath, KillSignal, KillSwitch, Look, PathKind, ProcessExit,
-    WalkLimits, Workdir,
+    RunTools, WalkLimits, Workdir,
 };
 use serde_json::{Value, json};
 use std::{
@@ -68,7 +68,16 @@ impl AgentHost for ScriptedHost {
         Ok(())
     }
 
-    fn spawn(&self, _plan: &LaunchPlan, _workdir: &Workdir) -> io::Result<AgentProcess> {
+    fn tools(&self) -> RunTools {
+        RunTools::Empty
+    }
+
+    fn spawn(
+        &self,
+        _plan: &LaunchPlan,
+        _workdir: &Workdir,
+        _tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
         let (stdin, agent_in) = tokio::io::duplex(64 * 1024);
         let (agent_out, stdout) = tokio::io::duplex(64 * 1024);
         let (exit_tx, exit_rx) = oneshot::channel();
