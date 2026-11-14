@@ -68,6 +68,21 @@ below says whether it is built. Record every deviation here, with its reason.
   depot's job only names the URL to fetch and takes the digest the shell
   computed, so it needs no download capability; the daemon's store is the
   only consumer, and tests substitute it there.
+- **The catalog is TOML data** (`catalog.toml`), read once by
+  `Depot::builtin`, rather than Rust tables.
+- **Digests, not signatures.** Node.js's digests come from its
+  `SHASUMS256.txt` over https; its GPG signature (`SHASUMS256.txt.asc`) is
+  not checked. fd publishes no checksum file, so its digests are GitHub's
+  recorded asset digests. The others come from the publisher's checksum
+  file, cross-checked against GitHub's digests. Each digest is pinned in the
+  catalog, so a download is checked against what was reviewed, not against
+  what the server says at install time.
+- **Bun's Linux x64 artifact is the baseline build**, which runs on CPUs
+  without AVX2, since the catalog cannot choose per CPU.
+- **The CLI acts on the data directory before a control API exists.** The
+  daemon does not write the tool store yet, so `ren tools` is its only
+  writer; once runs use toolsets, changes move behind `/control/v1/tools`
+  and the daemon owns the store, as it owns the rest of its storage.
 - **`ClientStatus` keeps its presence check** (`AgentHost::finds`) instead of
   coming from `Provision`. Reading versions runs each client, which would
   stall the supervisor's task on every clients request. Once runs get a
@@ -86,11 +101,14 @@ below says whether it is built. Record every deviation here, with its reason.
    and collects generations under `<data>/tools`. Not built: a run's search
    path from its generation, and runs recording their generation (a
    `ren-store` migration); nothing calls the store yet.
-3. **Catalog sources.** Not built. Release entries for node, bun, jq, fd,
-   and ripgrep with pinned checksums per platform.
-4. **Control API and CLI.** Not built. `/control/v1/tools` (plan, apply,
-   rollback, collect) and `ren tools list|plan|apply|rollback|gc|which`,
-   printing the same report as doctor.
+3. **Catalog sources.** Built. `crates/ren-depot/src/catalog.toml` pins
+   node 26.13.1, bun 1.4.4, jq 1.8.2, fd 10.5.2, and ripgrep 15.2.0 for
+   each platform; `Depot::builtin` reads it. Each was installed for real on
+   Linux x64 while building it; the other platforms' entries are unverified
+   beyond their digests.
+4. **Control API and CLI.** The CLI is built: `ren tools list|install|
+   remove|gc` on this host's data directory. Not built: `/control/v1/tools`,
+   rollback, and `which`.
 5. **Tools view.** Not built. One flush table grouped by kind (wanted,
    locked, source, used by, status), changes staged in a plan bar and
    applied as a new generation, and an inspector with provenance,

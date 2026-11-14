@@ -398,7 +398,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
 - `crates/ren-cli`: the `ren` binary, with `Cli` as its primary type
   (`lib.rs`) and a thin `main.rs` that sets up logging and captures `HostEnv`.
   `commands` holds clap parsing and dispatch (`runs` is `ren runs`, the
-  control API's runs, sent through `ControlTarget` like `ren control`): each command is a
+  control API's runs, sent through `ControlTarget` like `ren control`;
+  `tools` is `ren tools`, the depot's catalog and this host's tool store,
+  acted on in its data directory): each command is a
   `#[derive(Args)]` struct with its own execution method, and command groups
   are `#[derive(Subcommand)]` enums. `client` chooses the gateway (`--gateway`,
   `REN_GATEWAY`, `client.toml`, then the local listener) and owns

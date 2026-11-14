@@ -340,6 +340,8 @@ impl<F: Fetch> ToolStore<F> {
                 fs::remove_dir_all(&path).map_err(ToolStoreError::io("remove an install"))?;
                 collected.installs.extend(dir);
             }
+            // Only succeeds once the package has no installs left.
+            let _ = fs::remove_dir(&package_dir);
         }
         collected.generations.sort();
         collected.installs.sort();

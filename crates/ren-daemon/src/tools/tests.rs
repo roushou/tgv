@@ -279,6 +279,7 @@ async fn collection_keeps_what_live_generations_hold() {
         [one.install(&PackageId::JQ).unwrap().dir().to_string()]
     );
     assert!(!store.generation_dir(one.generation()).exists());
+    assert!(dir.path().join("store/jq").is_dir());
     let output = std::process::Command::new(store.bin(two.generation()).join("jq"))
         .output()
         .unwrap();

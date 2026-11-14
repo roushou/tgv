@@ -118,6 +118,30 @@ The launch mechanism follows [Claude's gateway protocol](https://code.claude.com
 [Codex's per-run configuration overrides](https://learn.chatgpt.com/docs/config-file/config-advanced#one-off-overrides-from-the-cli),
 and [OpenAI authentication for custom providers](https://learn.chatgpt.com/docs/auth#alternative-model-providers).
 
+### Tools for agents
+
+`ren tools` installs runtimes and utilities on this host from the catalog
+built into this Ren: Node.js, Bun, jq, fd, and ripgrep, each at one pinned
+release for Linux x64, Linux arm64, and macOS arm64. The clients themselves and
+git are only found on `PATH`, never installed.
+
+```sh
+ren tools list
+ren tools install node jq
+ren tools remove jq
+ren tools gc
+```
+
+Each download comes over https and must match the SHA-256 the catalog pins;
+anything else is refused and nothing changes. Installs go under the data
+directory (`tools/`), each in its own folder, and every change makes a new
+numbered generation, a folder of links (`tools/current/bin`) switched in one
+step. `remove` leaves files in place until `gc` deletes every generation but
+the current one and the installs it does not hold. `list --json` prints the
+same listing as JSON.
+
+Runs do not use these tools yet: agents still get the daemon's `PATH`.
+
 ## Native endpoints
 
 | Client endpoint                            | Upstream path                          |
