@@ -311,7 +311,14 @@ impl Report {
     /// a missing runtime or utility is one only when a client found here
     /// needs it.
     fn tools(&mut self, host: &impl ToolHost) {
-        let survey = Depot::builtin().survey(host);
+        let depot = match Depot::builtin() {
+            Ok(depot) => depot,
+            Err(error) => {
+                self.add("tool catalog", Status::Failed, error.to_string());
+                return;
+            }
+        };
+        let survey = depot.survey(host);
         let present = |id: &PackageId| {
             survey.iter().any(|surveyed| {
                 surveyed.package.id() == id && !matches!(surveyed.provision, Provision::Missing)

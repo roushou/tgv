@@ -1,0 +1,181 @@
+# The packages Ren knows, read by `Depot::builtin`. Each Ren release pins one
+# exact release per installable package; a package with no `release` is only
+# adopted from the host's search path.
+#
+# Digests come from each publisher's own checksum file where it has one,
+# cross-checked against GitHub's asset digests, as noted per package.
+
+[[package]]
+id = "claude"
+kind = "client"
+program = "claude"
+
+[[package]]
+id = "codex"
+kind = "client"
+program = "codex"
+
+[[package]]
+id = "pi"
+kind = "client"
+program = "pi"
+
+[[package]]
+id = "opencode"
+kind = "client"
+program = "opencode"
+
+[[package]]
+id = "node"
+kind = "runtime"
+program = "node"
+
+# Digests: nodejs.org's SHASUMS256.txt.
+[package.release]
+version = "26.13.1"
+
+[[package.release.artifact]]
+platform = "linux_x64"
+url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-x64.tar.gz"
+sha256 = "518674de2b621728a5e4486f5fb3b7d2900bb3cc4aa97969edaa463db99f9778"
+format = "tar_gz"
+program_at = "node-v26.13.1-linux-x64/bin/node"
+
+[[package.release.artifact]]
+platform = "linux_arm64"
+url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-arm64.tar.gz"
+sha256 = "80a330b35415382878df18d41afbd106ea89bfb3be0087d6608e289a14c5cc7d"
+format = "tar_gz"
+program_at = "node-v26.13.1-linux-arm64/bin/node"
+
+[[package.release.artifact]]
+platform = "macos_arm64"
+url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-arm64.tar.gz"
+sha256 = "aec2514ea1ceb2ba52455e9ec65986f6749a06dd759e5db2a72e6889668c9735"
+format = "tar_gz"
+program_at = "node-v26.13.1-darwin-arm64/bin/node"
+
+[[package]]
+id = "bun"
+kind = "runtime"
+program = "bun"
+
+# Digests: the release's SHASUMS256.txt, which matches GitHub's asset digests. Linux x64 is the baseline build, which runs on CPUs without AVX2.
+[package.release]
+version = "1.4.4"
+
+[[package.release.artifact]]
+platform = "linux_x64"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64-baseline.zip"
+sha256 = "e0446eb55995772eb9894bebae9a6be368d985a8b9271ee124486f9946eedd76"
+format = "zip"
+program_at = "bun-linux-x64-baseline/bun"
+
+[[package.release.artifact]]
+platform = "linux_arm64"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-aarch64.zip"
+sha256 = "baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e"
+format = "zip"
+program_at = "bun-linux-aarch64/bun"
+
+[[package.release.artifact]]
+platform = "macos_arm64"
+url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-darwin-aarch64.zip"
+sha256 = "c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510"
+format = "zip"
+program_at = "bun-darwin-aarch64/bun"
+
+[[package]]
+id = "git"
+kind = "utility"
+program = "git"
+
+[[package]]
+id = "jq"
+kind = "utility"
+program = "jq"
+
+# Digests: the release's sha256sum.txt, which matches GitHub's asset digests.
+[package.release]
+version = "1.8.2"
+
+[[package.release.artifact]]
+platform = "linux_x64"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64"
+sha256 = "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
+format = "bare"
+program_at = "jq"
+
+[[package.release.artifact]]
+platform = "linux_arm64"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-arm64"
+sha256 = "8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309"
+format = "bare"
+program_at = "jq"
+
+[[package.release.artifact]]
+platform = "macos_arm64"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-macos-arm64"
+sha256 = "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e"
+format = "bare"
+program_at = "jq"
+
+[[package]]
+id = "fd"
+kind = "utility"
+program = "fd"
+
+# Digests: GitHub's asset digests; the release publishes no checksum file.
+[package.release]
+version = "10.5.2"
+
+[[package.release.artifact]]
+platform = "linux_x64"
+url = "https://github.com/sharkdp/fd/releases/download/v10.5.2/fd-v10.5.2-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "7e2d07fa2b8807642aaec67b7e2972a9fbe4db26fcb340a7372392db42b26694"
+format = "tar_gz"
+program_at = "fd-v10.5.2-x86_64-unknown-linux-musl/fd"
+
+[[package.release.artifact]]
+platform = "linux_arm64"
+url = "https://github.com/sharkdp/fd/releases/download/v10.5.2/fd-v10.5.2-aarch64-unknown-linux-musl.tar.gz"
+sha256 = "63ea52cb31586e6d98efa2f06d73d542f16c7d0c4af0f07b579aaf9714cf907a"
+format = "tar_gz"
+program_at = "fd-v10.5.2-aarch64-unknown-linux-musl/fd"
+
+[[package.release.artifact]]
+platform = "macos_arm64"
+url = "https://github.com/sharkdp/fd/releases/download/v10.5.2/fd-v10.5.2-aarch64-apple-darwin.tar.gz"
+sha256 = "81bf98a16d3d7230e4a9123fcede243d71ea31a577113476ed43f1cdf4773162"
+format = "tar_gz"
+program_at = "fd-v10.5.2-aarch64-apple-darwin/fd"
+
+[[package]]
+id = "ripgrep"
+kind = "utility"
+program = "rg"
+
+# Digests: the release's .sha256 files, which match GitHub's asset digests.
+[package.release]
+version = "15.2.0"
+
+[[package.release.artifact]]
+platform = "linux_x64"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"
+format = "tar_gz"
+program_at = "ripgrep-15.2.0-x86_64-unknown-linux-musl/rg"
+
+[[package.release.artifact]]
+platform = "linux_arm64"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-gnu.tar.gz"
+sha256 = "a740b91c82eaf9914cfedd353572f2791cbe0162c84101ee0951058f4dcbc90d"
+format = "tar_gz"
+program_at = "ripgrep-15.2.0-aarch64-unknown-linux-gnu/rg"
+
+[[package.release.artifact]]
+platform = "macos_arm64"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz"
+sha256 = "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4"
+format = "tar_gz"
+program_at = "ripgrep-15.2.0-aarch64-apple-darwin/rg"

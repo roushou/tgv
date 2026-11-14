@@ -6,7 +6,7 @@
 //! random identities. Components receive them as values; nothing else calls
 //! `SystemTime::now`, `Instant::now`, or `Uuid::new_v4`.
 
-use ren_depot::{ToolHost, package::ProgramName, version::ProbeFailure};
+use ren_depot::{ToolHost, package::ProgramName, source::Platform, version::ProbeFailure};
 use ren_harness::{launch::LaunchPlan, pi::PiCache};
 use ren_recorder::{
     id::IdSource,
@@ -42,6 +42,11 @@ impl HostTools {
 
     pub fn new(search_path: Vec<PathBuf>) -> Self {
         Self { search_path }
+    }
+
+    /// The platform this binary was built for, if Ren installs tools there.
+    pub fn platform() -> Option<Platform> {
+        Platform::of(std::env::consts::OS, std::env::consts::ARCH)
     }
 
     fn executable(path: &Path) -> bool {
@@ -448,7 +453,7 @@ mod tests {
         let node = script(second.path(), "node", "echo v22.17.1", 0o755);
         script(second.path(), "jq", "exit 3", 0o755);
         let tools = HostTools::new(vec![first.path().into(), second.path().into()]);
-        let depot = Depot::builtin();
+        let depot = Depot::builtin().unwrap();
         let provision = |id: PackageId| depot.provision(&tools, depot.package(&id).unwrap());
         assert_eq!(
             provision(PackageId::NODE),

@@ -7,6 +7,7 @@
 //! observes the host's search path; installing packages is planned
 //! (docs/plans/dependencies.md).
 
+mod catalog;
 pub mod job;
 pub mod package;
 pub mod provision;
@@ -17,7 +18,9 @@ pub mod version;
 #[cfg(test)]
 mod purity;
 
-use package::{Kind, Package, PackageId, ProgramName};
+use catalog::Catalog;
+pub use catalog::CatalogError;
+use package::{Package, PackageId, ProgramName};
 use provision::{Found, Provision};
 use std::path::{Path, PathBuf};
 use version::{ObservedVersion, ProbeFailure};
@@ -47,22 +50,11 @@ pub struct Surveyed {
 }
 
 impl Depot {
-    /// The catalog built into this Ren: the four clients, the runtimes and
-    /// the utilities they and Ren use.
-    pub fn builtin() -> Self {
-        Self {
-            catalog: vec![
-                Package::versioned(PackageId::CLAUDE, Kind::Client, "claude"),
-                Package::versioned(PackageId::CODEX, Kind::Client, "codex"),
-                Package::versioned(PackageId::PI, Kind::Client, "pi"),
-                Package::versioned(PackageId::OPENCODE, Kind::Client, "opencode"),
-                Package::versioned(PackageId::NODE, Kind::Runtime, "node"),
-                Package::versioned(PackageId::BUN, Kind::Runtime, "bun"),
-                Package::versioned(PackageId::GIT, Kind::Utility, "git"),
-                Package::versioned(PackageId::JQ, Kind::Utility, "jq"),
-                Package::versioned(PackageId::FD, Kind::Utility, "fd"),
-            ],
-        }
+    /// The catalog built into this Ren (`catalog.toml`): the four clients,
+    /// and the runtimes and utilities they and Ren use, with the release
+    /// Ren installs of each that has one.
+    pub fn builtin() -> Result<Self, CatalogError> {
+        Catalog::read(include_str!("catalog.toml")).map(|catalog| Self { catalog: catalog.0 })
     }
 
     /// A depot with this catalog instead of the built-in one.
@@ -139,7 +131,7 @@ mod tests {
 
     #[test]
     fn every_builtin_name_parses_and_is_unique() {
-        let depot = Depot::builtin();
+        let depot = Depot::builtin().unwrap();
         let mut ids: Vec<&str> = depot.packages().iter().map(|p| p.id().as_str()).collect();
         for package in depot.packages() {
             let id: PackageId = package.id().as_str().parse().unwrap();
@@ -154,8 +146,47 @@ mod tests {
     }
 
     #[test]
+    fn the_builtin_catalog_installs_its_runtimes_and_utilities_on_every_platform() {
+        use crate::source::{Platform, Source};
+        use strum::VariantArray as _;
+        let depot = Depot::builtin().unwrap();
+        for id in [
+            PackageId::CLAUDE,
+            PackageId::CODEX,
+            PackageId::PI,
+            PackageId::OPENCODE,
+            PackageId::NODE,
+            PackageId::BUN,
+            PackageId::GIT,
+            PackageId::JQ,
+            PackageId::FD,
+            PackageId::RIPGREP,
+        ] {
+            assert!(depot.package(&id).is_some(), "{id}");
+        }
+        let installable: Vec<&str> = depot
+            .packages()
+            .iter()
+            .filter_map(|package| match package.source() {
+                Source::System => None,
+                Source::Release(release) => {
+                    for platform in Platform::VARIANTS {
+                        assert!(
+                            release.artifact(*platform).is_some(),
+                            "{} {platform}",
+                            package.id()
+                        );
+                    }
+                    Some(package.id().as_str())
+                }
+            })
+            .collect();
+        assert_eq!(installable, ["node", "bun", "jq", "fd", "ripgrep"]);
+    }
+
+    #[test]
     fn surveys_what_the_host_provides_keeping_what_it_cannot_read() {
-        let depot = Depot::builtin();
+        let depot = Depot::builtin().unwrap();
         let survey = depot.survey(&FakeHost);
         let of = |name: &str| {
             survey

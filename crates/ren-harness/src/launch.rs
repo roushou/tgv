@@ -378,7 +378,7 @@ mod tests {
     /// policy as permission rules.
     #[test]
     fn every_requirement_is_a_catalog_package_and_names_the_driven_program() {
-        let depot = ren_depot::Depot::builtin();
+        let depot = ren_depot::Depot::builtin().unwrap();
         for harness in <Harness as strum::VariantArray>::VARIANTS {
             let requirements = harness.requirements();
             for requirement in &requirements {

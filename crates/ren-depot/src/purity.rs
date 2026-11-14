@@ -6,6 +6,7 @@ fn sources_stay_free_of_runtime_and_io() {
     let sources = [
         ("lib.rs", include_str!("lib.rs")),
         ("package.rs", include_str!("package.rs")),
+        ("catalog.rs", include_str!("catalog.rs")),
         ("job.rs", include_str!("job.rs")),
         ("provision.rs", include_str!("provision.rs")),
         ("source.rs", include_str!("source.rs")),

@@ -32,6 +32,7 @@ impl PackageId {
     pub const GIT: Self = Self::known("git");
     pub const JQ: Self = Self::known("jq");
     pub const FD: Self = Self::known("fd");
+    pub const RIPGREP: Self = Self::known("ripgrep");
 
     /// A catalog name written in this crate's source; the catalog's tests
     /// check every one parses.
@@ -76,10 +77,6 @@ impl fmt::Display for PackageId {
 pub struct ProgramName(Cow<'static, str>);
 
 impl ProgramName {
-    const fn known(name: &'static str) -> Self {
-        Self(Cow::Borrowed(name))
-    }
-
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -133,18 +130,6 @@ pub struct Package {
 
 impl Package {
     /// A package whose version is printed by `program --version`.
-    pub(crate) const fn versioned(id: PackageId, kind: Kind, program: &'static str) -> Self {
-        Self {
-            id,
-            kind,
-            program: ProgramName::known(program),
-            version_args: &["--version"],
-            source: Source::System,
-        }
-    }
-
-    /// A package outside the built-in catalog, whose version is printed by
-    /// `program --version`.
     pub fn new(id: PackageId, kind: Kind, program: ProgramName, source: Source) -> Self {
         Self {
             id,

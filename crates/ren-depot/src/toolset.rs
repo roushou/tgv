@@ -326,10 +326,26 @@ mod tests {
 
     fn depot(node: &str, digest: char) -> Depot {
         Depot::of(vec![
-            Package::versioned(PackageId::NODE, Kind::Runtime, "node")
-                .sourced(release(node, digest)),
-            Package::versioned(PackageId::JQ, Kind::Utility, "jq").sourced(release("1.7.1", 'b')),
-            Package::versioned(PackageId::CODEX, Kind::Client, "codex"),
+            Package::new(
+                PackageId::NODE,
+                Kind::Runtime,
+                "node".parse().unwrap(),
+                Source::System,
+            )
+            .sourced(release(node, digest)),
+            Package::new(
+                PackageId::JQ,
+                Kind::Utility,
+                "jq".parse().unwrap(),
+                Source::System,
+            )
+            .sourced(release("1.7.1", 'b')),
+            Package::new(
+                PackageId::CODEX,
+                Kind::Client,
+                "codex".parse().unwrap(),
+                Source::System,
+            ),
         ])
     }
 
