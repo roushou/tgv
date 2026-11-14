@@ -9,7 +9,7 @@
 use crate::tools::ToolStore;
 use ren_depot::toolset::Generation;
 use ren_depot::{ToolHost, package::ProgramName, source::Platform, version::ProbeFailure};
-use ren_harness::{launch::LaunchPlan, pi::PiCache};
+use ren_harness::{launch::LaunchPlan, pi::PiCache, sign_in::LocalRedirect};
 use ren_recorder::{
     id::IdSource,
     time::{Clock, Moment, Monotonic, UnixMillis},
@@ -257,12 +257,19 @@ impl ProcessHost {
             .transpose()
     }
 
-    fn start(mut command: std::process::Command, workdir: &Path) -> io::Result<AgentProcess> {
+    fn start(
+        mut command: std::process::Command,
+        workdir: &Path,
+        stderr: Stderr,
+    ) -> io::Result<AgentProcess> {
         command
             .current_dir(workdir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(match stderr {
+                Stderr::Discarded => Stdio::null(),
+                Stderr::WithStdout => Stdio::piped(),
+            });
         let mut command = tokio::process::Command::from(command);
         command.kill_on_drop(true);
         // A program installed a moment ago can still be open in a process
@@ -284,6 +291,29 @@ impl ProcessHost {
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(io::Error::other("the agent's pipes were not opened"));
         };
+        let stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin> = match stderr {
+            Stderr::Discarded => Box::new(stdout),
+            Stderr::WithStdout => match child.stderr.take() {
+                Some(stderr) => Box::new(Merged::new(stdout, stderr)),
+                None => return Err(io::Error::other("the agent's stderr was not opened")),
+            },
+        };
+        let (exit, kill) = Self::exiting(child);
+        Ok(AgentProcess {
+            stdin: Box::new(stdin),
+            stdout,
+            exit,
+            kill,
+        })
+    }
+
+    /// `child`'s exit, and the switch that kills it first.
+    fn exiting(
+        mut child: tokio::process::Child,
+    ) -> (
+        futures_util::future::BoxFuture<'static, ProcessExit>,
+        KillSwitch,
+    ) {
         let (kill, signal) = KillSwitch::pair();
         let exit = async move {
             let status = tokio::select! {
@@ -298,10 +328,48 @@ impl ProcessHost {
                 Err(_) => ProcessExit::Unknown,
             }
         };
+        (Box::pin(exit), kill)
+    }
+
+    /// The size of a login's terminal: wide, so a long link stays on one line.
+    #[cfg(unix)]
+    const TERMINAL: (u16, u16) = (50, 400);
+
+    /// `command` started in `workdir` on a pseudo-terminal of its own, as
+    /// its session leader with that terminal as its controlling terminal,
+    /// echo off.
+    #[cfg(unix)]
+    fn start_in_terminal(
+        command: &std::process::Command,
+        workdir: &Path,
+    ) -> io::Result<AgentProcess> {
+        let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
+        let (rows, columns) = Self::TERMINAL;
+        pty.resize(pty_process::Size::new(rows, columns))
+            .map_err(io::Error::other)?;
+        let mut terminal = pty_process::Command::new(command.get_program())
+            .args(command.get_args())
+            .current_dir(workdir)
+            .kill_on_drop(true)
+            .env("TERM", "xterm-256color");
+        for (name, value) in command.get_envs() {
+            terminal = match value {
+                Some(value) => terminal.env(name, value),
+                None => terminal.env_remove(name),
+            };
+        }
+        // Echo off from the start: what Ren types (an API key) is never shown
+        // back by the terminal; a program that wants it shown shows it.
+        let mut modes = rustix::termios::tcgetattr(&pts)?;
+        modes.local_modes.remove(rustix::termios::LocalModes::ECHO);
+        rustix::termios::tcsetattr(&pts, rustix::termios::OptionalActions::Now, &modes)?;
+        let child = terminal.spawn(pts).map_err(io::Error::other)?;
+        let (read, write) = pty.into_split();
+        let (exit, kill) = Self::exiting(child);
         Ok(AgentProcess {
-            stdin: Box::new(stdin),
-            stdout: Box::new(stdout),
-            exit: Box::pin(exit),
+            stdin: Box::new(write),
+            stdout: Box::new(read),
+            exit,
             kill,
         })
     }
@@ -477,7 +545,146 @@ impl AgentHost for ProcessHost {
         if let Some(path) = self.search_path_with(tools)? {
             command.env("PATH", path);
         }
-        Self::start(command, workdir.as_path())
+        Self::start(command, workdir.as_path(), Stderr::Discarded)
+    }
+
+    fn spawn_with_stderr(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        if plan.loads_pi_extension() {
+            return Err(io::Error::other(
+                "a client's own short commands load no extension",
+            ));
+        }
+        let mut command = plan.command(None, &[]);
+        if let Some(path) = self.search_path_with(tools)? {
+            command.env("PATH", path);
+        }
+        Self::start(command, workdir.as_path(), Stderr::WithStdout)
+    }
+
+    fn spawn_in_terminal(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        if plan.loads_pi_extension() {
+            return Err(io::Error::other(
+                "a client's own short commands load no extension",
+            ));
+        }
+        let mut command = plan.command(None, &[]);
+        if let Some(path) = self.search_path_with(tools)? {
+            command.env("PATH", path);
+        }
+        #[cfg(unix)]
+        {
+            Self::start_in_terminal(&command, workdir.as_path())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (command, workdir);
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+    }
+
+    fn open_local(
+        &self,
+        address: &LocalRedirect,
+    ) -> futures_util::future::BoxFuture<'static, io::Result<()>> {
+        let address = address.as_str().to_owned();
+        Box::pin(async move {
+            // Loopback only (the address was checked to be the one the
+            // login listens on): no proxy, no redirect followed.
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(io::Error::other)?;
+            let response = client
+                .get(&address)
+                .send()
+                .await
+                .map_err(io::Error::other)?;
+            let status = response.status();
+            if status.is_success() || status.is_redirection() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!("it answered {status}")))
+            }
+        })
+    }
+}
+
+/// Where a started process's stderr goes.
+#[derive(Debug, Clone, Copy)]
+enum Stderr {
+    Discarded,
+    /// Read with its stdout, as one stream.
+    WithStdout,
+}
+
+/// Two pipes read as one: whatever either has, in the order it is read,
+/// ending once both have ended. Lines from one never split the other's
+/// within a read, but a line written in pieces may interleave with the
+/// other pipe's.
+struct Merged<A, B> {
+    first: Option<A>,
+    second: Option<B>,
+}
+
+impl<A, B> Merged<A, B> {
+    fn new(first: A, second: B) -> Self {
+        Self {
+            first: Some(first),
+            second: Some(second),
+        }
+    }
+}
+
+impl<A, B> tokio::io::AsyncRead for Merged<A, B>
+where
+    A: tokio::io::AsyncRead + Unpin,
+    B: tokio::io::AsyncRead + Unpin,
+{
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        use std::task::Poll;
+        let this = &mut *self;
+        let before = buffer.filled().len();
+        if let Some(first) = this.first.as_mut() {
+            match std::pin::Pin::new(first).poll_read(context, buffer) {
+                Poll::Ready(Ok(())) if buffer.filled().len() > before => {
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Ready(Ok(())) => this.first = None,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => {}
+            }
+        }
+        if let Some(second) = this.second.as_mut() {
+            match std::pin::Pin::new(second).poll_read(context, buffer) {
+                Poll::Ready(Ok(())) if buffer.filled().len() > before => {
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Ready(Ok(())) => this.second = None,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => {}
+            }
+        }
+        if this.first.is_none() && this.second.is_none() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
     }
 }
 
@@ -686,12 +893,15 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn starts_a_process_in_its_directory_and_kills_it_on_request() {
-        use super::{ProcessExit, ProcessHost};
+        use super::{ProcessExit, ProcessHost, Stderr};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let dir = tempfile::tempdir().unwrap();
         let mut echo = std::process::Command::new("sh");
-        echo.args(["-c", "pwd; read line; echo \"$line\"; exit 3"]);
-        let mut process = ProcessHost::start(echo, dir.path()).unwrap();
+        echo.args([
+            "-c",
+            "pwd; echo hidden >&2; read line; echo \"$line\"; exit 3",
+        ]);
+        let mut process = ProcessHost::start(echo, dir.path(), Stderr::Discarded).unwrap();
         process.stdin.write_all(b"hello\n").await.unwrap();
         let mut output = String::new();
         process.stdout.read_to_string(&mut output).await.unwrap();
@@ -701,9 +911,59 @@ mod tests {
 
         let mut sleeper = std::process::Command::new("sleep");
         sleeper.arg("30");
-        let sleeping = ProcessHost::start(sleeper, dir.path()).unwrap();
+        let sleeping = ProcessHost::start(sleeper, dir.path(), Stderr::Discarded).unwrap();
         sleeping.kill.fire();
         assert_eq!(sleeping.exit.await, ProcessExit::Signal(9));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_terminal_login_sees_a_terminal_and_takes_enter() {
+        use super::{ProcessExit, ProcessHost};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let mut login = std::process::Command::new("sh");
+        // Like `pi auth login --api-key`: a terminal, a prompt, no echo.
+        login.args([
+            "-c",
+            "[ -t 0 ] && echo terminal; stty -echo; printf 'Enter key: '; read key; echo; echo \"Saved ${#key} characters\"",
+        ]);
+        let mut process = ProcessHost::start_in_terminal(&login, dir.path()).unwrap();
+        process.stdin.write_all(b"sk-acme\r").await.unwrap();
+        let mut output = Vec::new();
+        let mut buffer = [0; 1024];
+        // A terminal reads as an error once its process has exited.
+        while let Ok(read @ 1..) = process.stdout.read(&mut buffer).await {
+            output.extend_from_slice(&buffer[..read]);
+        }
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("terminal"), "{output:?}");
+        assert!(output.contains("Saved 7 characters"), "{output:?}");
+        assert!(!output.contains("sk-acme"), "{output:?}");
+        assert_eq!(process.exit.await, ProcessExit::Code(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_login_is_read_from_stdout_and_stderr_together() {
+        use super::{ProcessExit, ProcessHost, Stderr};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let mut login = std::process::Command::new("sh");
+        // Like `claude auth login`: a link on stdout, a prompt with no
+        // newline, then a failure on stderr.
+        login.args([
+            "-c",
+            "echo 'visit: https://example.com/a'; printf 'Paste code > '; read code; echo \"Login failed: $code\" >&2; exit 1",
+        ]);
+        let mut process = ProcessHost::start(login, dir.path(), Stderr::WithStdout).unwrap();
+        process.stdin.write_all(b"bad\n").await.unwrap();
+        let mut output = String::new();
+        process.stdout.read_to_string(&mut output).await.unwrap();
+        assert_eq!(
+            output,
+            "visit: https://example.com/a\nPaste code > Login failed: bad\n"
+        );
+        assert_eq!(process.exit.await, ProcessExit::Code(1));
     }
 
     #[tokio::test(flavor = "current_thread")]

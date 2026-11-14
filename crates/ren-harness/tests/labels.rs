@@ -54,7 +54,8 @@ macro_rules! table {
 #[test]
 fn every_label_is_pinned() {
     use ren_harness::{
-        attribution, claude_code, codex, commands, drive, models, opencode, pi, settings, tools,
+        attribution, claude_code, codex, commands, drive, models, opencode, pi, settings, sign_in,
+        tools,
     };
     let table = table![
         ren_harness::Harness,
@@ -71,6 +72,7 @@ fn every_label_is_pinned() {
         settings::Effort,
         settings::ApprovalPolicy,
         settings::Midway,
+        sign_in::SignInMethod,
         drive::RequestKind,
         commands::CommandKind,
         commands::Sigil,

@@ -4,9 +4,12 @@
  * nothing here touches the DOM, so the brief is tested without a browser.
  */
 import type { Revision } from './api.ts';
+import { SignIns } from './signIn.ts';
 import {
   Sessions,
   type ComposeMode,
+  type Drivable,
+  type RunClient,
   type DeskSession,
   type RunSnapshot,
   type SessionBody,
@@ -142,6 +145,25 @@ export class Redline {
       );
     });
     return (Sessions.folders(open, live)[0]?.sessions ?? []).slice(0, Redline.OFFERED);
+  }
+
+  /**
+   * Another client a brief could go to when `harness` is signed out: the
+   * first of `ready` other than it whose sign-in is not known to be out.
+   * Offered for the operator to choose, never switched to on its own.
+   */
+  static instead(
+    ready: readonly Drivable[],
+    clients: readonly RunClient[],
+    harness: Drivable,
+  ): Drivable | null {
+    return (
+      ready.find((drivable) => {
+        if (drivable === harness) return false;
+        const entry = clients.find((client) => client.harness === drivable);
+        return entry !== undefined && !SignIns.signedOut(entry.sign_in);
+      }) ?? null
+    );
   }
 
   /**

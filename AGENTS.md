@@ -236,7 +236,15 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `ApprovalPolicy`, and `Midway`, what each client takes mid-run: steering
   and which settings change from the next turn); the commands a client
   offers a prompt (`commands`: `ClientCommand`, each codec reading its
-  client's own list); the gateway URL a harness is pointed at and the
+  client's own list); a client's own sign-in commands (`sign_in`: the
+  `SignInMethod`s each offers, each a `SignInPlan`: its command, its
+  `Console` (pipes or a terminal), and its `SignInFlow` (paste a code back,
+  a device code approved on the page, an API key, or the `127.0.0.1`
+  address the browser could not open, checked as a `LocalRedirect`); its
+  status read as a `Standing`, its login read by `LoginReader`, the `https`
+  `SignInLink` it prints, a device login's `DeviceCode`, and the
+  `SignInAnswer` handed back, a secret never shown; each client's in its
+  module's `auth`); the gateway URL a harness is pointed at and the
   `UserToken` it presents there (`endpoint`); and `HostEnv` (`host`), the
   host environment that launching and configuration read. It performs
   filesystem and process I/O but has no async runtime, HTTP, database, or
@@ -330,8 +338,19 @@ dependencies under "Crates" below. Read the code for current module ownership.
   through the recorder's `RunTap` (a run without room to be recorded does not
   start), with every event of its conversation as `entries` keeps it (no
   streamed pieces; a reply cut off kept as far as it came), and drains every
-  run when the last handle is dropped. `src/purity.rs` keeps `run`,
-  `workdir`, `project`, `entries`, `files`, and `session` free of runtime and I/O. The daemon constructs it when `[runs]`
+  run when the last handle is dropped. A client's sign-in on the host is
+  read and run through the client's own commands: `sign_in` holds the pure
+  `SignInState` and the `Login` machine (starting, awaiting its code, its
+  approval, its key, or its redirect, finishing, ended), and `login` its shell (`StatusCheck`, `LoginTalk`, and
+  `SignIns`, one login per client, checked after each login and after a
+  failed turn), behind `Supervisor::check_sign_in`, `sign_in`,
+  `answer_sign_in`, `wait_sign_in`, and `cancel_sign_in`; a login is started
+  with `AgentHost::spawn_with_stderr`, so its failure reason is read, or
+  `AgentHost::spawn_in_terminal` when it needs a terminal, and a pasted
+  address is opened with `AgentHost::open_local`. What a login prints is
+  cleaned of every answer typed into it.
+  `src/purity.rs` keeps `run`, `workdir`, `project`, `entries`, `files`,
+  `session`, and `sign_in` free of runtime and I/O. The daemon constructs it when `[runs]`
   roots are configured, with `ProcessHost`; the gateway's control API serves it.
 - `crates/ren-gateway`: Ren's HTTP interface, with `Gateway` as its primary type.
   It owns forwarding, management, and control routes on one listener, assembled
@@ -380,7 +399,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
     on its first request. Its `runs` module serves `/control/v1/runs`, read only: the live runs
     of the `ren_supervisor::Supervisor` in `ManagementSetup` and their updates
     as SSE, and what a session can start with (places, clients, and models); it
-    holds the run refusals the `sessions` routes share. Its `history` module serves
+    holds the run refusals the `sessions` routes share. Its `sign_in` module
+    serves each client's sign-in under `/control/v1/runs/clients/{harness}/sign-in`
+    (start, answer, check, wait, cancel); an answer goes only to the login. Its `history` module serves
     `/control/v1/history`: archiving, unarchiving, and deleting a recording or
     run, checked against the `Reader` and recorded through the recorder.
 - `crates/ren-daemon`: configuration, resource wiring, and lifecycle, with
@@ -390,8 +411,10 @@ dependencies under "Crates" below. Read the code for current module ownership.
   coordinates HTTP shutdown before capture drain. It defines no
   HTTP routes or handlers and has no production Axum dependency. `config` turns
   `Config` into a `RuntimeConfig`. `host` holds `SystemClock`, `RandomIds`,
-  `ObservationThread`, `ProcessHost`, the supervisor's `AgentHost`, and
-  `HostTools`, the depot's `ToolHost`. `tools` is the tool store on disk
+  `ObservationThread`, `ProcessHost`, the supervisor's `AgentHost` (its
+  logins on a pseudo-terminal through `pty-process`, echo off, and a pasted
+  loopback address opened with one `GET`), and `HostTools`, the depot's
+  `ToolHost`. `tools` is the tool store on disk
   (`ToolStore`, under `<data>/tools`): it carries out the depot's
   `InstallJob`s (downloading through its `Fetch` seam, `ReqwestFetch` in
   production, https only and capped in bytes; unpacking tar.gz, zip, and
@@ -446,6 +469,9 @@ dependencies under "Crates" below. Read the code for current module ownership.
   `src/lib/tools.ts` the Tools view's pure core (each package's
   `Standing`, the `ToolPlan` staged before it is applied, and `ToolGroups`),
   whose first read the UI server makes (`src/routes/tools/+page.server.ts`),
+  `src/lib/signIn.ts` a client's sign-in as the API reports it and how the
+  view words it, with `src/lib/SignInSheet.svelte` the sheet that runs the
+  client's own login (its link out, the page's code back),
   `src/lib/mention.ts` the composer's offers (the client's commands after
   `/` or `$`, the folder's files after `@`), `src/lib/redline.ts` Redline's
   pure core (what a mark points at, the brief an agent gets, and the open

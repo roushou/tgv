@@ -203,12 +203,17 @@ async fn a_session_is_started_prompted_approved_and_stopped_through_the_control_
         clients["clients"],
         json!([
             { "harness": "claude_code", "status": "ready", "approvals": ["ask", "edits", "auto"],
-              "midway": ["model", "approvals"] },
+              "midway": ["model", "approvals"], "sign_in": { "kind": "signed_out" },
+              "sign_in_methods": ["claude_subscription", "anthropic_console"] },
             { "harness": "codex", "status": "ready", "approvals": ["ask", "edits", "auto"],
-              "midway": ["steer", "model", "effort", "approvals"] },
-            { "harness": "pi", "status": "ready", "approvals": [], "midway": ["steer", "model", "effort"] },
+              "midway": ["steer", "model", "effort", "approvals"],
+              "sign_in": { "kind": "signed_out" }, "sign_in_methods": ["chatgpt"] },
+            { "harness": "pi", "status": "ready", "approvals": [], "midway": ["steer", "model", "effort"],
+              "sign_in": { "kind": "signed_out" },
+              "sign_in_methods": ["chatgpt", "anthropic_api_key", "openai_api_key"] },
             { "harness": "opencode", "status": "ready", "approvals": ["ask", "edits"],
-              "midway": ["steer", "model", "effort"] },
+              "midway": ["steer", "model", "effort"], "sign_in": { "kind": "signed_out" },
+              "sign_in_methods": ["chatgpt", "anthropic_api_key", "openai_api_key"] },
         ])
     );
 
@@ -946,4 +951,216 @@ async fn a_session_is_created_driven_continued_archived_and_served_again_after_a
         .until_session(&session, |s| s["stored"]["archived_at"].is_null())
         .await;
     gateway.stop().await;
+}
+
+#[tokio::test]
+async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api() {
+    let upstream = mock(Router::new()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = TestGateway::with_runs(
+        &config(&upstream),
+        dir.path(),
+        vec![PathBuf::from("/work")],
+        ScriptedHost,
+    )
+    .await;
+    let control = Control::new(&gateway);
+    let sign_in = "/runs/clients/claude_code/sign-in";
+
+    // Nothing to cancel or hand a code to before a login runs.
+    let (status, body) = control.post(&format!("{sign_in}/cancel"), json!({})).await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("no_sign_in"))
+    );
+    let (status, body) = control
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "good" }))
+        .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("no_sign_in"))
+    );
+
+    // Its status command, run now.
+    let (status, body) = control.post(&format!("{sign_in}/check"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sign_in"], json!({ "kind": "signed_out" }));
+
+    // The login answers with the link Claude Code printed.
+    let (status, body) = control.post(sign_in, json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["method"], "claude_subscription");
+    assert_eq!(
+        body["login"],
+        json!({ "kind": "awaiting_code", "link": "https://login.example.test/authorize?state=acme",
+                "said": "Opening browser to sign in" })
+    );
+
+    // A wrong code: the login fails and says why, and the client is still
+    // signed out as its status says. The code is never answered with.
+    let (status, body) = control
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "bad" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["outcome"],
+        json!({
+            "end": { "end": "exited", "exit": { "kind": "code", "value": 1 },
+                     "said": "Login failed: That code wasn't accepted." },
+            "state": { "kind": "signed_out" },
+        })
+    );
+    assert!(!body.to_string().contains("\"bad\""));
+
+    // A login replaced by a newer one is cancelled; a code is refused once
+    // the login has ended; a method the client lacks is invalid.
+    let (status, _) = control
+        .post(sign_in, json!({ "method": "anthropic_console" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = control.post(&format!("{sign_in}/cancel"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = control
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "good" }))
+        .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("no_sign_in"))
+    );
+    let (status, _) = control
+        .post(
+            "/runs/clients/pi/sign-in",
+            json!({ "method": "claude_subscription" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = control
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "" }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_device_login_shows_its_code_and_is_waited_on_until_it_ends() {
+    let upstream = mock(Router::new()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = TestGateway::with_runs(
+        &config(&upstream),
+        dir.path(),
+        vec![PathBuf::from("/work")],
+        ScriptedHost,
+    )
+    .await;
+    let control = Control::new(&gateway);
+    let sign_in = "/runs/clients/codex/sign-in";
+
+    let (status, _) = control.post(&format!("{sign_in}/wait"), json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Started, it answers once both the link and the code are printed.
+    let (status, body) = control.post(sign_in, json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["method"], "chatgpt");
+    assert_eq!(
+        body["login"],
+        json!({ "kind": "awaiting_approval", "link": "https://login.example.test/codex/device",
+                "code": "ACME-12345",
+                "said": "2. Enter this one-time code (expires in 15 minutes)" })
+    );
+    // Nothing is pasted into a device login.
+    let (status, body) = control
+        .post(&format!("{sign_in}/answer"), json!({ "answer": "x" }))
+        .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (StatusCode::CONFLICT, json!("not_awaiting_answer"))
+    );
+
+    // Approved, it ends by itself; the status check after it decides.
+    let (status, body) = control.post(&format!("{sign_in}/wait"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["waited"],
+        json!({ "kind": "done", "outcome": {
+            "end": { "end": "exited", "exit": { "kind": "code", "value": 0 },
+                     "said": "Successfully logged in" },
+            "state": { "kind": "signed_out" } } })
+    );
+    // Asked again after it ended, the same outcome.
+    let (_, again) = control.post(&format!("{sign_in}/wait"), json!({})).await;
+    assert_eq!(again["waited"], body["waited"]);
+}
+
+#[tokio::test]
+async fn a_key_is_typed_into_the_login_and_a_redirect_is_opened_only_when_it_is_the_one_waited_on()
+{
+    let upstream = mock(Router::new()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = TestGateway::with_runs(
+        &config(&upstream),
+        dir.path(),
+        vec![PathBuf::from("/work")],
+        ScriptedHost,
+    )
+    .await;
+    let control = Control::new(&gateway);
+
+    // Pi's API key: asked for at once, typed into its login, never answered with.
+    let pi = "/runs/clients/pi/sign-in";
+    let (status, body) = control
+        .post(pi, json!({ "method": "anthropic_api_key" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["login"],
+        json!({ "kind": "awaiting_key", "said": null })
+    );
+    let (status, body) = control
+        .post(
+            &format!("{pi}/answer"),
+            json!({ "answer": "sk-ant-acme-not-a-key" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["outcome"]["end"],
+        json!({ "end": "exited", "exit": { "kind": "code", "value": 0 },
+                "said": "Saved API key for Anthropic." })
+    );
+    assert!(!body.to_string().contains("sk-ant-acme"));
+
+    // OpenCode's token sharing: the address pasted back must be the one its
+    // link sends to.
+    let opencode = "/runs/clients/opencode/sign-in";
+    let (status, body) = control.post(opencode, json!({ "method": "chatgpt" })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["login"]["kind"], "awaiting_redirect");
+    for (pasted, refused) in [
+        (
+            "http://127.0.0.1:1/auth/callback?code=c&state=s",
+            "redirect_elsewhere",
+        ),
+        (
+            "http://127.0.0.1:39547/auth/callback?error=denied",
+            "redirect_incomplete",
+        ),
+        ("approved", "redirect_not_an_address"),
+    ] {
+        let (status, body) = control
+            .post(&format!("{opencode}/answer"), json!({ "answer": pasted }))
+            .await;
+        assert_eq!(
+            (status, body["error"].clone()),
+            (StatusCode::CONFLICT, json!(refused))
+        );
+    }
+    let (status, body) = control
+        .post(
+            &format!("{opencode}/answer"),
+            json!({ "answer": "http://127.0.0.1:39547/auth/callback?code=acme&state=acme" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["outcome"]["end"]["said"], "Connected to OpenAI");
+    assert_eq!(body["outcome"]["state"], json!({ "kind": "signed_out" }));
 }

@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import SignInSheet from '#lib/SignInSheet.svelte';
+  import { SignIns } from '#lib/signIn.ts';
+  import { Runs, RunsClient, type Drivable, type RunClient } from '#lib/runs.ts';
   import { getWorkbench } from '#lib/workbench.svelte.ts';
   import Icon from '#lib/Icon.svelte';
   import { harnessLabel } from '#lib/activity.ts';
@@ -125,6 +128,39 @@
   const effects = $derived(listing ? plan.effects(listing) : []);
   const staged = $derived(new Map(effects.map((effect) => [effect.id, effect])));
   const short = (sha: string) => `${sha.slice(0, 12)}…`;
+
+  // Each client's sign-in on this host, read from the run API when it is on.
+  const runs = new RunsClient(fetch);
+  let clients = $state.raw<RunClient[]>([]);
+  let signingIn = $state<Drivable | null>(null);
+  let checking = $state<Drivable | null>(null);
+  async function readClients() {
+    try {
+      clients = await runs.clients();
+    } catch {
+      // Runs are off or unreachable: no sign-in is shown.
+    }
+  }
+  onMount(() => void readClients());
+  /** The client a package is, with its sign-in; null for other packages. */
+  const clientOf = (pkg: ToolPackage) => SignIns.clientOf(pkg, clients);
+  const signedOut = $derived(
+    listing?.packages.filter((pkg) => {
+      const entry = clientOf(pkg);
+      return entry !== null && SignIns.signedOut(entry.sign_in);
+    }) ?? [],
+  );
+  async function check(harness: Drivable) {
+    checking = harness;
+    try {
+      await runs.checkSignIn(harness);
+    } catch {
+      // Shown as it was; the next read says.
+    } finally {
+      checking = null;
+    }
+    await readClients();
+  }
   const stateLabel = (state: GenerationView['state']) =>
     state === 'current' ? 'current' : state === 'in_use' ? 'in use' : state === 'idle' ? '' : state;
 </script>
@@ -160,6 +196,14 @@
           tally.updates === 1 ? 'update' : 'updates',
           'live',
         )}{/if}
+      {#if signedOut.length > 0}
+        <button
+          class="chip filter warning"
+          title="Show the first client that is signed out"
+          onclick={() => (selected = signedOut[0]?.id ?? selected)}
+          ><Icon name="lock" size={10} />{signedOut.length} signed out</button
+        >
+      {/if}
       {#if listing.platform}
         <span class="chip mono">{Platforms.label(listing.platform)}</span>
       {:else}
@@ -235,7 +279,16 @@
                       class="mono muted path">{supply.system.path}</span
                     >{:else if pkg.needed_by.length > 0}<span class="chip error"
                       >missing · {pkg.needed_by.map(harnessLabel).join(', ')}</span
-                    >{/if}</td
+                    >{/if}{#if clientOf(pkg)}{@const shown = SignIns.chip(
+                      clientOf(pkg)?.sign_in ?? { kind: 'not_checked' },
+                    )}{#if shown}<span
+                        class="chip sign-in {shown.tone}"
+                        title="Sign-in on this host, as the client says"
+                        >{#if shown.tone === 'warning'}<Icon
+                            name="lock"
+                            size={10}
+                          />{/if}{shown.text}</span
+                      >{/if}{/if}</td
                 >
                 <td class="end">
                   {#if label && listing.platform}
@@ -356,6 +409,45 @@
             {/if}
           </dl>
         </section>
+        {@const entry = clientOf(chosen)}
+        {@const harness = entry ? Runs.drivable(entry.harness) : null}
+        {#if entry && harness && (entry.sign_in.kind !== 'not_checked' || entry.sign_in_methods.length > 0)}
+          {@const shown = SignIns.chip(entry.sign_in)}
+          <section class="sign-in" class:out={SignIns.signedOut(entry.sign_in)}>
+            <h3>
+              Sign-in
+              {#if shown}<span class="chip {shown.tone}">{shown.text}</span>{/if}
+            </h3>
+            <p class="muted">
+              {#if entry.sign_in.kind === 'signed_out'}
+                {harnessLabel(harness)} is signed out here: its sessions can’t send until it is signed
+                in.
+              {:else if entry.sign_in.kind === 'unknown'}
+                {entry.sign_in.reason}
+              {:else if entry.sign_in.kind === 'signed_in'}
+                As {harnessLabel(harness)}’s own status command says.
+              {:else}
+                Not read yet.
+              {/if}
+            </p>
+            <div class="change-actions">
+              <button
+                class="button small"
+                disabled={checking === harness}
+                onclick={() => void check(harness)}
+                >{checking === harness ? 'Checking…' : 'Check again'}</button
+              >
+              {#if entry.sign_in_methods.length > 0}
+                <button
+                  class="button small"
+                  class:primary={entry.sign_in.kind !== 'signed_in'}
+                  onclick={() => (signingIn = harness)}
+                  >{entry.sign_in.kind === 'signed_in' ? 'Sign in again' : 'Sign in'}</button
+                >
+              {/if}
+            </div>
+          </section>
+        {/if}
       {/if}
       {#if listing.generations.length > 0}
         <section>
@@ -394,6 +486,23 @@
     </aside>
   {/if}
 </div>
+
+{#if signingIn}
+  {@const harness = signingIn}
+  <SignInSheet
+    {harness}
+    client={harnessLabel(harness)}
+    methods={clients.find((entry) => entry.harness === harness)?.sign_in_methods ?? []}
+    start={(method) => runs.startSignIn(harness, method)}
+    answer={(answer) => runs.signInAnswer(harness, answer)}
+    wait={() => runs.waitSignIn(harness)}
+    cancel={() => runs.cancelSignIn(harness)}
+    onclose={() => {
+      signingIn = null;
+      void readClients();
+    }}
+  />
+{/if}
 
 <style>
   .tools-view {
@@ -603,6 +712,19 @@
     min-height: 0;
     overflow: auto;
     font-size: 12px;
+  }
+  .sign-in p {
+    margin: 4px 0 8px;
+    line-height: 1.5;
+  }
+  .sign-in.out {
+    background: var(--warning-soft);
+  }
+  .chip.sign-in {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
   }
   .tools-inspector section {
     padding: 10px 12px;

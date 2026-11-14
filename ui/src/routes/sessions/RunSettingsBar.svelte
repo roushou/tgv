@@ -46,7 +46,12 @@
       approvals: ApprovalPolicy | null;
     }) => void;
     /** The clients a draft can change to, and what to do with the one chosen. */
-    choice?: { clients: readonly Drivable[]; onclient: (harness: Drivable) => void } | null;
+    choice?: {
+      clients: readonly Drivable[];
+      /** What to say of each client beside its name: its sign-in. */
+      hint?: (harness: Drivable) => string | null;
+      onclient: (harness: Drivable) => void;
+    } | null;
   } = $props();
 
   /** The picker's value for "the client's own": never a model's or label's text. */
@@ -136,6 +141,7 @@
           options: choice.clients.map((offered) => ({
             value: offered,
             label: harnessLabel(offered),
+            hint: choice.hint?.(offered) ?? undefined,
           })),
         },
       ]}

@@ -14,7 +14,9 @@ use crate::{
     install::{InstallError, TailscaleCli},
     publish::Publish,
 };
-use agent::{AgentError, FakeAgent, Played};
+use agent::{
+    AgentError, FakeAgent, FakeClaudeAuth, FakeCodexAuth, FakeOpenCodeAuth, FakePiAuth, Played,
+};
 use clap::{Args, Subcommand};
 use provider::{FakeProvider, ProviderError};
 use ren_harness::host::HostEnv;
@@ -231,9 +233,23 @@ impl Dev {
     pub fn run(self, env: &HostEnv) -> Result<(), DevError> {
         match self.action {
             DevAction::Provider(args) => Ok(FakeProvider::serve(args.listen, args.settings)?),
-            DevAction::Agent(args) => {
-                Ok(FakeAgent::new(args.client, env, &args.data_dir, &args.arguments)?.run()?)
-            }
+            DevAction::Agent(args) => match args.client {
+                Played::Claude if FakeClaudeAuth::asked(&args.arguments) => {
+                    Ok(FakeClaudeAuth::run(&args.data_dir, &args.arguments)?)
+                }
+                Played::Codex if FakeCodexAuth::asked(&args.arguments) => {
+                    Ok(FakeCodexAuth::run(&args.data_dir, &args.arguments)?)
+                }
+                Played::Pi if FakePiAuth::asked(&args.arguments) => {
+                    Ok(FakePiAuth::run(&args.data_dir, &args.arguments)?)
+                }
+                Played::OpenCode if FakeOpenCodeAuth::asked(&args.arguments) => {
+                    Ok(FakeOpenCodeAuth::run(&args.data_dir, &args.arguments)?)
+                }
+                Played::Codex | Played::Claude | Played::Pi | Played::OpenCode => {
+                    Ok(FakeAgent::new(args.client, env, &args.data_dir, &args.arguments)?.run()?)
+                }
+            },
             DevAction::Up(args) => {
                 let slot = Slot::new(env)?;
                 let wait = RunWait {

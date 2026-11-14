@@ -92,6 +92,13 @@ export class RedlineDesk {
     );
   }
 
+  /** Read the clients and sessions again now, keeping what is shown
+   * meanwhile: after a client's sign-in changed. */
+  reread() {
+    this.#stale = true;
+    this.prepare();
+  }
+
   toggle() {
     this.open = !this.open;
     if (this.open) this.prepare();

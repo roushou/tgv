@@ -210,6 +210,51 @@ impl AgentHost for FakeHost {
             kill,
         })
     }
+
+    fn spawn_with_stderr(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        let command = plan.command(None, &[]);
+        let login = command
+            .get_args()
+            .next()
+            .is_some_and(|argument| argument == "login");
+        if !login {
+            return self.spawn(plan, workdir, tools);
+        }
+        // Codex's `login status`, signed out; not counted as an agent.
+        let (stdin, _agent_in) = tokio::io::duplex(1024);
+        let (mut agent_out, stdout) = tokio::io::duplex(1024);
+        let (kill, _signal) = KillSwitch::pair();
+        tokio::spawn(async move {
+            agent_out.write_all(b"Not logged in\n").await.unwrap();
+        });
+        Ok(AgentProcess {
+            stdin: Box::new(stdin),
+            stdout: Box::new(stdout),
+            exit: Box::pin(async { ProcessExit::Code(1) }),
+            kill,
+        })
+    }
+
+    fn spawn_in_terminal(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        self.spawn_with_stderr(plan, workdir, tools)
+    }
+
+    fn open_local(
+        &self,
+        _address: &ren_harness::sign_in::LocalRedirect,
+    ) -> futures_util::future::BoxFuture<'static, io::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 async fn send(out: &mut DuplexStream, message: Value) {

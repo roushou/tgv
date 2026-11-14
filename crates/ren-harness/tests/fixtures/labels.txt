@@ -12,6 +12,7 @@ models::DefaultChoice: default other
 settings::Effort: off minimal low medium high xhigh max
 settings::ApprovalPolicy: ask edits auto
 settings::Midway: steer model effort approvals
+sign_in::SignInMethod: claude_subscription anthropic_console chatgpt anthropic_api_key openai_api_key
 drive::RequestKind: initialize thread_start thread_resume turn_start turn_interrupt turn_steer configure list_commands
 commands::CommandKind: command skill template
 commands::Sigil: / $

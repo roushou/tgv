@@ -215,7 +215,10 @@ the Chat Completions wire, which has no provider route of its own. See
 
 Ren does not sign in, refresh tokens, or substitute an API credential, except an
 operator-key upstream's own key. The client owns authentication. No requests are
-made to providers merely by starting Ren.
+made to providers merely by starting Ren. For the sessions Ren drives, the web
+UI can run a client's own login on the daemon's host
+([Claude Code](#signing-claude-code-in), [Codex](#signing-codex-in),
+[Pi](#signing-pi-in), [OpenCode](#signing-opencode-in)).
 
 ## Claude Code
 
@@ -244,6 +247,18 @@ The key passes through to DeepSeek untouched; Ren never holds it. Calls are
 recorded with provider `deepseek`. DeepSeek documents only Messages there, so
 Ren routes only `POST /deepseek/v1/messages`: Claude Code's token counting and
 model listing get `404` from Ren.
+
+### Signing Claude Code in
+
+Sessions run Claude Code on the daemon's host under that host's sign-in. When
+it is signed out, the Sessions view says so above the composer and in the
+client picker, with **Sign in**. That runs `claude auth login` on the
+daemon's host: choose a Claude subscription or an Anthropic Console account,
+open the link it printed (on any device), approve, and paste the code the page
+shows. Claude Code reads the code, stores its own sign-in, and refreshes it;
+Ren only passes the link and the code through, and records neither. Ren then
+runs `claude auth status` to confirm. The same works on a VPS with no browser.
+Through the API: [Client sign-in](api.md#client-sign-in).
 
 ## Chat Completions clients
 
@@ -312,6 +327,17 @@ idle sockets close with code `1012` (service restart); sockets with a call still
 running close the same way once it ends, or when the drain deadline passes. See
 OpenAI's [gateway authentication guide](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+### Signing Codex in
+
+Sessions run Codex on the daemon's host under that host's sign-in. When it is
+signed out, the Sessions view says so and its Send becomes **Sign in to
+Codex**. That runs `codex login --device-auth` on the daemon's host: open the
+page it printed (on any device), sign in with your ChatGPT account, and enter
+the one-time code the sheet shows. Codex finishes by itself once you approve,
+and the sheet follows it; Ren then runs `codex login status` to confirm. Ren
+relays the link and the code only. Through the API:
+[Client sign-in](api.md#client-sign-in).
 
 ### Sandbox on Ubuntu
 
@@ -384,6 +410,19 @@ serialization to Pi and does not rewrite the generated payload. Sign-in and refr
 requests still go directly from Pi to OpenAI. The endpoint and bearer-token flow
 follow [OpenAI's ChatGPT plan inference documentation](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
 
+### Signing Pi in
+
+When Pi is signed out on the daemon's host, the Sessions view offers **Sign
+in to Pi**. Choose a ChatGPT account (`pi auth login openai-codex
+--no-browser`: open the page, enter the one-time code the sheet shows, and Pi
+finishes once you approve) or an Anthropic or OpenAI API key (`pi auth login
+<provider> --api-key`), typed once into the sheet and handed to Pi's own
+login, which saves it. Anthropic does not permit Claude subscriptions in
+third-party clients, so Pi is not offered one. Pi's login needs a terminal:
+Ren runs it on a pseudo-terminal of its own, echo off. Ren reads Pi's sign-in
+with `pi auth check --json` for each provider it routes, never with
+`--credentials`.
+
 Other providers keep their normal endpoints. Select a supported provider explicitly;
 an existing default for another provider will bypass Ren. Later extensions or custom
 provider registrations can supersede this adapter. Explicit `--extension` loading
@@ -453,11 +492,24 @@ Managed (administrator) OpenCode configuration still wins over the launcher.
 OpenCode keeps its own sign-in and keys (`/connect`, `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`), and Ren adds no header that names another client. Anthropic
 does not permit Claude subscription sign-in from third-party clients, so use an
-Anthropic API key with OpenCode. OpenCode's ChatGPT sign-in sends requests to
-ChatGPT's Codex backend with headers of its own; under `ren run opencode` its
-`openai` requests go to the public Responses endpoint instead, which is
-unvalidated for that sign-in. Use an OpenAI API key, or run OpenCode outside Ren
-for ChatGPT sign-in.
+Anthropic API key with OpenCode. OpenCode's headless ChatGPT sign-in sends
+requests to ChatGPT's Codex backend with headers of its own; under `ren run
+opencode` its `openai` requests go to the public Responses endpoint instead,
+which is unvalidated for that sign-in. Use an OpenAI API key, or the token
+sharing sign-in ([Signing OpenCode in](#signing-opencode-in)).
+
+### Signing OpenCode in
+
+When OpenCode is signed out, the Sessions view offers **Sign in to
+OpenCode**: an Anthropic or OpenAI API key (`opencode auth login <provider>
+--method key`, on a pseudo-terminal), or a ChatGPT account through OpenAI's
+token sharing for open-source clients (`--method chatgpt-token-sharing`),
+whose sign-in is for the public API endpoint Ren routes OpenCode's `openai`
+provider to; that path has not been validated end to end with a live account.
+Its approval sends your browser to a `127.0.0.1` address on the daemon's host,
+which a remote browser cannot open: copy that address from the address bar
+and paste it into the sheet, and the daemon opens it there, only when it is
+the address the sign-in waits on.
 
 OpenCode's `openai` provider opens a Responses WebSocket by default. Ren answers
 the handshake on `/openai` with `426 Upgrade Required`, and OpenCode keeps that

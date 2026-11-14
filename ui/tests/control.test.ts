@@ -105,6 +105,13 @@ test('starting, listing, projects, models, answering, history edits, and the fee
       headers: { 'sec-fetch-site': 'same-origin' },
     }),
   );
+  await proxy.respond(
+    post('/control/runs/clients/claude_code/sign-in', { method: 'anthropic_console' }),
+  );
+  await proxy.respond(post('/control/runs/clients/claude_code/sign-in/answer', { answer: 'abc' }));
+  await proxy.respond(post('/control/runs/clients/claude_code/sign-in/check', {}));
+  await proxy.respond(post('/control/runs/clients/claude_code/sign-in/cancel', {}));
+  await proxy.respond(post('/control/runs/clients/codex/sign-in/wait', {}));
   await proxy.respond(post(`/control/sessions/${run}/approvals/ap-1`, { decision: 'accept' }));
   await proxy.respond(post(`/control/sessions/${run}/stop`, {}));
   await proxy.respond(post(`/control/sessions/${run}/unqueue`, {}));
@@ -126,6 +133,11 @@ test('starting, listing, projects, models, answering, history edits, and the fee
     'GET /control/v1/runs/projects',
     'GET /control/v1/runs/clients',
     'GET /control/v1/runs/clients/pi/models',
+    'POST /control/v1/runs/clients/claude_code/sign-in',
+    'POST /control/v1/runs/clients/claude_code/sign-in/answer',
+    'POST /control/v1/runs/clients/claude_code/sign-in/check',
+    'POST /control/v1/runs/clients/claude_code/sign-in/cancel',
+    'POST /control/v1/runs/clients/codex/sign-in/wait',
     `POST /control/v1/sessions/${run}/approvals/ap-1`,
     `POST /control/v1/sessions/${run}/stop`,
     `POST /control/v1/sessions/${run}/unqueue`,
@@ -219,6 +231,7 @@ test('cross-site, non-JSON, unknown, and unlisted requests never reach the daemo
     [post(`/control/history/sessions/${run}/shred`, {}), 404],
     [post(`/control/history/calls/${run}/delete`, {}), 404],
     [new Request('http://ui.test/control/runs/clients/hermes/models'), 404],
+    [new Request('http://ui.test/control/runs/clients/claude_code/sign-in/token'), 404],
     [new Request(`http://ui.test/control/history/runs/${run}/delete`), 405],
     [post('/control/pause', {}), 404],
     [post('/control/tools/install', {}), 404],

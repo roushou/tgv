@@ -1,6 +1,10 @@
 //! A scripted agent host: each "process" is an in-memory Codex app server
 //! that opens a thread, asks one file-change approval per turn, and finishes
-//! the turn once it is answered. No real client, network, or credentials.
+//! the turn once it is answered; or, for Claude Code's own `auth` commands,
+//! a scripted status (always signed out) and login (a link, then a code:
+//! `good` exits 0, anything else fails as Claude Code does); or, for Codex's
+//! `login`, a status (signed out) and a device login approved at once. No
+//! real client, network, or credentials.
 
 use ren_harness::launch::LaunchPlan;
 use ren_supervisor::{
@@ -74,7 +78,7 @@ impl AgentHost for ScriptedHost {
 
     fn spawn(
         &self,
-        _plan: &LaunchPlan,
+        plan: &LaunchPlan,
         _workdir: &Workdir,
         _tools: &RunTools,
     ) -> io::Result<AgentProcess> {
@@ -82,7 +86,22 @@ impl AgentHost for ScriptedHost {
         let (agent_out, stdout) = tokio::io::duplex(64 * 1024);
         let (exit_tx, exit_rx) = oneshot::channel();
         let (kill, signal) = KillSwitch::pair();
-        tokio::spawn(serve(agent_in, agent_out, signal, exit_tx));
+        let command = plan.command(None, &[]);
+        let program = command.get_program().to_string_lossy().into_owned();
+        let arguments: Vec<String> = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        match (program.as_str(), arguments.first().map(String::as_str)) {
+            ("claude", Some("auth")) => {
+                tokio::spawn(auth(arguments, agent_in, agent_out, signal, exit_tx))
+            }
+            ("codex", Some("login")) => tokio::spawn(login(arguments, agent_out, signal, exit_tx)),
+            ("pi" | "opencode", Some("auth")) => tokio::spawn(other_auth(
+                program, arguments, agent_in, agent_out, signal, exit_tx,
+            )),
+            _ => tokio::spawn(serve(agent_in, agent_out, signal, exit_tx)),
+        };
         Ok(AgentProcess {
             stdin: Box::new(stdin),
             stdout: Box::new(stdout),
@@ -90,6 +109,169 @@ impl AgentHost for ScriptedHost {
             kill,
         })
     }
+
+    fn spawn_with_stderr(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        // Scripted processes write everything to the one stream.
+        self.spawn(plan, workdir, tools)
+    }
+
+    fn spawn_in_terminal(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        self.spawn(plan, workdir, tools)
+    }
+
+    fn open_local(
+        &self,
+        _address: &ren_harness::sign_in::LocalRedirect,
+    ) -> futures_util::future::BoxFuture<'static, io::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Claude Code's `auth status --json` (signed out) or `auth login`.
+async fn auth(
+    arguments: Vec<String>,
+    input: DuplexStream,
+    mut out: DuplexStream,
+    kill: KillSignal,
+    exit: oneshot::Sender<ProcessExit>,
+) {
+    let script = async {
+        if arguments.get(1).map(String::as_str) == Some("status") {
+            out.write_all(br#"{"loggedIn": false, "authMethod": "none"}"#)
+                .await
+                .unwrap();
+            return ProcessExit::Code(1);
+        }
+        out.write_all(
+            b"Opening browser to sign in\nIf the browser didn't open, visit: https://login.example.test/authorize?state=acme\nPaste code here if prompted > ",
+        )
+        .await
+        .unwrap();
+        let mut lines = BufReader::new(input).lines();
+        match lines.next_line().await {
+            Ok(Some(code)) if code == "good" => {
+                out.write_all(b"Login successful.\n").await.unwrap();
+                ProcessExit::Code(0)
+            }
+            Ok(Some(_)) => {
+                out.write_all(b"Login failed: That code wasn't accepted.\n")
+                    .await
+                    .unwrap();
+                ProcessExit::Code(1)
+            }
+            Ok(None) | Err(_) => ProcessExit::Code(1),
+        }
+    };
+    let status = tokio::select! {
+        status = script => status,
+        () = kill.fired() => ProcessExit::Signal(9),
+    };
+    drop(out);
+    let _ = exit.send(status);
+}
+
+/// Codex's `login status` (always signed out) or `login --device-auth`,
+/// which shows its link and code and is approved a moment later.
+async fn login(
+    arguments: Vec<String>,
+    mut out: DuplexStream,
+    kill: KillSignal,
+    exit: oneshot::Sender<ProcessExit>,
+) {
+    let script = async {
+        if arguments.get(1).map(String::as_str) == Some("status") {
+            out.write_all(b"Not logged in\n").await.unwrap();
+            return ProcessExit::Code(1);
+        }
+        out.write_all(
+            b"Follow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \x1b[94mhttps://login.example.test/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mACME-12345\x1b[0m\n",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        out.write_all(b"Successfully logged in\n").await.unwrap();
+        ProcessExit::Code(0)
+    };
+    let status = tokio::select! {
+        status = script => status,
+        () = kill.fired() => ProcessExit::Signal(9),
+    };
+    drop(out);
+    let _ = exit.send(status);
+}
+
+/// Pi's `auth check` (never ready) and `auth login <p> --api-key` (a
+/// prompt, then the key saved), and OpenCode's `auth list` (none) and
+/// `auth login openai --method chatgpt-token-sharing` (a link that sends to
+/// 127.0.0.1, then done a moment later).
+async fn other_auth(
+    program: String,
+    arguments: Vec<String>,
+    input: DuplexStream,
+    mut out: DuplexStream,
+    kill: KillSignal,
+    exit: oneshot::Sender<ProcessExit>,
+) {
+    let script = async {
+        let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        match (program.as_str(), words.as_slice()) {
+            ("pi", ["auth", "check", "--provider", provider, ..]) => {
+                let line = format!(
+                    "{{\"status\":\"not_ready\",\"provider\":\"{provider}\",\"reason\":\"credentials_not_configured\"}}\n"
+                );
+                out.write_all(line.as_bytes()).await.unwrap();
+                ProcessExit::Code(1)
+            }
+            ("pi", ["auth", "login", _, "--api-key"]) => {
+                out.write_all(b"Enter Anthropic API key: ").await.unwrap();
+                // Typed on a terminal: Enter is a carriage return.
+                let mut key = Vec::new();
+                let mut reader = BufReader::new(input);
+                match reader.read_until(b'\r', &mut key).await {
+                    Ok(read) if read > 1 => {
+                        out.write_all(b"\r\nSaved API key for Anthropic.\r\n")
+                            .await
+                            .unwrap();
+                        ProcessExit::Code(0)
+                    }
+                    Ok(_) | Err(_) => ProcessExit::Code(1),
+                }
+            }
+            ("opencode", ["auth", "list", ..]) => {
+                out.write_all(b"No authenticated integrations\n")
+                    .await
+                    .unwrap();
+                ProcessExit::Code(0)
+            }
+            ("opencode", ["auth", "login", ..]) => {
+                out.write_all(
+                    b"Complete authorization in your browser.\nhttps://login.example.test/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A39547%2Fauth%2Fcallback&state=acme\nWaiting for authorization...\n",
+                )
+                .await
+                .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                out.write_all(b"Connected to OpenAI\n").await.unwrap();
+                ProcessExit::Code(0)
+            }
+            _ => ProcessExit::Code(2),
+        }
+    };
+    let status = tokio::select! {
+        status = script => status,
+        () = kill.fired() => ProcessExit::Signal(9),
+    };
+    drop(out);
+    let _ = exit.send(status);
 }
 
 async fn send(out: &mut DuplexStream, message: Value) {
