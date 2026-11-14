@@ -121,6 +121,13 @@ impl Line {
         Self(bytes)
     }
 
+    /// Text typed into a terminal, then Enter (a carriage return).
+    pub(crate) fn keys(text: &str) -> Self {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.push(b'\r');
+        Self(bytes)
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }

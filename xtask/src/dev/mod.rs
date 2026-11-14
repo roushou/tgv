@@ -14,7 +14,9 @@ use crate::{
     install::{InstallError, TailscaleCli},
     publish::Publish,
 };
-use agent::{AgentError, FakeAgent, FakeClaudeAuth, FakeCodexAuth, Played};
+use agent::{
+    AgentError, FakeAgent, FakeClaudeAuth, FakeCodexAuth, FakeOpenCodeAuth, FakePiAuth, Played,
+};
 use clap::{Args, Subcommand};
 use provider::{FakeProvider, ProviderError};
 use ren_harness::host::HostEnv;
@@ -237,6 +239,12 @@ impl Dev {
                 }
                 Played::Codex if FakeCodexAuth::asked(&args.arguments) => {
                     Ok(FakeCodexAuth::run(&args.data_dir, &args.arguments)?)
+                }
+                Played::Pi if FakePiAuth::asked(&args.arguments) => {
+                    Ok(FakePiAuth::run(&args.data_dir, &args.arguments)?)
+                }
+                Played::OpenCode if FakeOpenCodeAuth::asked(&args.arguments) => {
+                    Ok(FakeOpenCodeAuth::run(&args.data_dir, &args.arguments)?)
                 }
                 Played::Codex | Played::Claude | Played::Pi | Played::OpenCode => {
                     Ok(FakeAgent::new(args.client, env, &args.data_dir, &args.arguments)?.run()?)

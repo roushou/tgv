@@ -1,19 +1,22 @@
 //! Running a client's own sign-in commands, off the task's loop: its status
-//! command, read once it exits ([`StatusCheck`]), and its login, talked to
+//! commands, read once they exit ([`StatusCheck`]), and its login, talked to
 //! until it ends ([`LoginTalk`]). The task keeps what each client's sign-in
 //! is and who waits on it ([`SignIns`]).
 
 use crate::{
     host::AgentProcess,
-    sign_in::{Login, LoginEnd, LoginInput, LoginOutcome, SignInState},
+    sign_in::{Awaiting, Login, LoginEnd, LoginInput, LoginOutcome, SignInState},
 };
 use futures_util::{FutureExt, future::BoxFuture, stream::FuturesUnordered};
 use ren_harness::{
     Harness,
-    lines::{LineLimit, Lines},
-    sign_in::{LoginReader, SignInCode, SignInFlow, SignInRefused},
+    lines::{Line, LineLimit, Lines},
+    sign_in::{
+        Console, LocalRedirect, LoginEvent, LoginReader, RedirectRefused, SignInAnswer, SignInFlow,
+        SignInRefused,
+    },
 };
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, io, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot, watch},
@@ -32,14 +35,18 @@ pub enum SignInError {
     Spawn,
     #[error("no sign-in is running for {0}")]
     NoLogin(Harness),
-    #[error("the sign-in is not waiting for a code")]
-    NotAwaitingCode,
+    #[error("the sign-in is not waiting for an answer")]
+    NotAwaitingAnswer,
+    #[error(transparent)]
+    Redirect(#[from] RedirectRefused),
     #[error("the supervisor has stopped")]
     Gone,
 }
 
 pub(crate) type CheckReply = oneshot::Sender<Result<SignInState, SignInError>>;
 pub(crate) type OutcomeReply = oneshot::Sender<Result<LoginOutcome, SignInError>>;
+/// Opening a loopback address on the host, for a login waiting on it.
+pub(crate) type Opening = BoxFuture<'static, io::Result<()>>;
 
 /// A wait on a login: going, with its state now and its outcome to come, or
 /// already ended.
@@ -51,17 +58,35 @@ pub(crate) enum WaitOn {
     Done(LoginOutcome),
 }
 
-/// A client's status command, run to its end and read.
+/// A client's status commands, each run to its end and read.
 pub(crate) struct StatusCheck;
 
 impl StatusCheck {
     /// How long a status command may take: well under the UI proxy's 30
     /// seconds, with a login's end before it.
     const TIMEOUT: Duration = Duration::from_secs(10);
-    /// The most output read; a status is a short JSON object.
+    /// The most output read; a status is short.
     const MAX: usize = 256 * 1024;
 
-    pub(crate) async fn run(harness: Harness, process: AgentProcess) -> SignInState {
+    /// Read `processes`, the client's status commands, all at once.
+    pub(crate) async fn run(harness: Harness, processes: Vec<AgentProcess>) -> SignInState {
+        let read = futures_util::future::join_all(processes.into_iter().map(Self::one)).await;
+        let outputs: Option<Vec<Vec<u8>>> = read.into_iter().collect();
+        match outputs {
+            None => SignInState::Unknown {
+                reason: format!("{harness} did not say whether it is signed in in time"),
+            },
+            Some(outputs) => match harness.read_sign_in(&outputs) {
+                Ok(standing) => standing.into(),
+                Err(unread) => SignInState::Unknown {
+                    reason: unread.to_string(),
+                },
+            },
+        }
+    }
+
+    /// One command's output; none when it took too long.
+    async fn one(process: AgentProcess) -> Option<Vec<u8>> {
         let AgentProcess {
             stdin,
             mut stdout,
@@ -72,17 +97,7 @@ impl StatusCheck {
         let read = tokio::time::timeout(Self::TIMEOUT, Self::read(&mut stdout)).await;
         kill.fire();
         let _ = exit.await;
-        match read {
-            Err(_) => SignInState::Unknown {
-                reason: format!("{harness} did not say whether it is signed in in time"),
-            },
-            Ok(output) => match harness.read_sign_in(&output) {
-                Ok(standing) => standing.into(),
-                Err(unread) => SignInState::Unknown {
-                    reason: unread.to_string(),
-                },
-            },
-        }
+        read.ok()
     }
 
     async fn read(stdout: &mut (dyn AsyncRead + Send + Unpin)) -> Vec<u8> {
@@ -98,19 +113,29 @@ impl StatusCheck {
     }
 }
 
-/// One login, talked to: its output read, the operator's code written,
-/// cancelled when asked or when its handle is dropped.
+/// An operator's answer on its way to a login: typed into it, or an address
+/// opened on the host for it. `secret` is left out of anything it prints.
+pub(crate) enum Answer {
+    Typed { line: Line, secret: String },
+    Opened { opening: Opening, secret: String },
+}
+
+/// One login, talked to: its output read, the operator's answer handed to
+/// it, cancelled when asked or when its handle is dropped. Whatever it
+/// prints is cleaned of every answer handed to it before it is shown.
 pub(crate) struct LoginTalk {
-    codes: mpsc::Receiver<SignInCode>,
+    answers: mpsc::Receiver<Answer>,
     cancel: oneshot::Receiver<()>,
     state: watch::Sender<Login>,
+    secrets: Vec<String>,
 }
 
 /// The task's side of a running login.
 pub(crate) struct LoginHandle {
     attempt: u64,
+    console: Console,
     pub(crate) state: watch::Receiver<Login>,
-    codes: mpsc::Sender<SignInCode>,
+    answers: mpsc::Sender<Answer>,
     /// Dropping it cancels the login.
     _cancel: oneshot::Sender<()>,
     /// Who waits for its outcome.
@@ -118,27 +143,32 @@ pub(crate) struct LoginHandle {
 }
 
 impl LoginTalk {
-    /// How long a login may wait for its code or approval: a device
+    /// How long a login may wait for its answer or approval: a device
     /// code's lifetime.
     const AWAITING: Duration = Duration::from_secs(15 * 60);
-    /// How long a client may take to finish once it has its code.
+    /// How long a client may take to finish once it has its answer.
     const FINISHING: Duration = Duration::from_secs(15);
+    /// How long opening a loopback address may take.
+    const OPENING: Duration = Duration::from_secs(10);
     const CHUNK: usize = 8 * 1024;
+    const HIDDEN: &'static str = "•••";
 
-    fn new(attempt: u64, flow: SignInFlow) -> (Self, LoginHandle) {
-        let (codes, code_receiver) = mpsc::channel(1);
+    fn new(attempt: u64, console: Console, flow: SignInFlow) -> (Self, LoginHandle) {
+        let (answers, answer_receiver) = mpsc::channel(1);
         let (cancel, cancel_receiver) = oneshot::channel();
         let (state, state_receiver) = watch::channel(Login::start(flow));
         (
             Self {
-                codes: code_receiver,
+                answers: answer_receiver,
                 cancel: cancel_receiver,
                 state,
+                secrets: Vec::new(),
             },
             LoginHandle {
                 attempt,
+                console,
                 state: state_receiver,
-                codes,
+                answers,
                 _cancel: cancel,
                 waiting: Vec::new(),
             },
@@ -152,64 +182,106 @@ impl LoginTalk {
         }
     }
 
+    /// What it printed, any answer it echoed left out.
+    fn printed(&self, event: LoginEvent) {
+        let event = match event {
+            LoginEvent::Said(mut text) => {
+                for secret in &self.secrets {
+                    text = text.replace(secret.as_str(), Self::HIDDEN);
+                }
+                LoginEvent::Said(text)
+            }
+            event @ (LoginEvent::Link(_) | LoginEvent::DeviceCode(_)) => event,
+        };
+        self.step(LoginInput::Printed(event));
+    }
+
     fn end(&self) -> LoginEnd {
         match &*self.state.borrow() {
             Login::Ended(end) => end.clone(),
             Login::Starting { .. }
             | Login::AwaitingCode { .. }
             | Login::AwaitingApproval { .. }
-            | Login::Finishing { .. } => LoginEnd::Broken,
+            | Login::AwaitingKey { .. }
+            | Login::AwaitingRedirect { .. }
+            | Login::Finishing { .. } => LoginEnd::Broken { said: None },
         }
     }
 
-    async fn run(mut self, harness: Harness, process: AgentProcess, limit: LineLimit) -> LoginEnd {
+    async fn run(
+        mut self,
+        harness: Harness,
+        flow: SignInFlow,
+        process: AgentProcess,
+        limit: LineLimit,
+    ) -> LoginEnd {
         let AgentProcess {
             mut stdin,
             mut stdout,
             exit,
             kill,
         } = process;
-        let mut reader = LoginReader::new(harness);
+        let mut reader = LoginReader::new(harness, flow);
         let mut lines = Lines::new(limit);
         let mut buffer = vec![0; Self::CHUNK];
         let deadline = tokio::time::sleep(Self::AWAITING);
         tokio::pin!(deadline);
         let mut exit = exit.fuse();
-        let mut codes_open = true;
+        let mut answers_open = true;
         // What stopped it, when Ren stops it; none when its output ended.
         let stopped = loop {
             tokio::select! {
                 read = stdout.read(&mut buffer) => match read {
                     Ok(read @ 1..) => {
                         for frame in lines.push(buffer.get(..read).unwrap_or_default()) {
-                            if let Some(event) = reader.receive(frame) {
-                                self.step(LoginInput::Printed(event));
+                            for event in reader.receive(frame) {
+                                self.printed(event);
                             }
                         }
                     }
+                    // A terminal reads as an error once its process exits.
                     Ok(_) | Err(_) => {
                         let last = std::mem::replace(&mut lines, Lines::new(limit)).finish();
-                        if let Some(event) = last.and_then(|frame| reader.receive(frame)) {
-                            self.step(LoginInput::Printed(event));
+                        for event in last.into_iter().flat_map(|frame| reader.receive(frame)) {
+                            self.printed(event);
                         }
                         break None;
                     }
                 },
-                code = self.codes.recv(), if codes_open => match code {
-                    Some(code) if self.state.borrow().awaits_code() => {
-                        let line = code.line();
+                answer = self.answers.recv(), if answers_open => match answer {
+                    Some(_) if self.state.borrow().awaiting().is_none() => {}
+                    Some(Answer::Typed { line, secret }) => {
+                        self.secrets.push(secret);
                         let written = async {
                             stdin.write_all(line.as_bytes()).await?;
                             stdin.flush().await
                         };
                         if written.await.is_err() {
-                            break Some(LoginInput::Broken);
+                            break Some(LoginInput::Broken(None));
                         }
-                        self.step(LoginInput::CodeSent);
+                        self.step(LoginInput::Answered);
                         deadline.set(tokio::time::sleep(Self::FINISHING));
                     }
-                    Some(_) => {}
-                    None => codes_open = false,
+                    Some(Answer::Opened { opening, secret }) => {
+                        self.secrets.push(secret);
+                        match tokio::time::timeout(Self::OPENING, opening).await {
+                            Ok(Ok(())) => {
+                                self.step(LoginInput::Answered);
+                                deadline.set(tokio::time::sleep(Self::FINISHING));
+                            }
+                            Ok(Err(error)) => {
+                                break Some(LoginInput::Broken(Some(format!(
+                                    "the address could not be opened on the host: {error}"
+                                ))));
+                            }
+                            Err(_) => {
+                                break Some(LoginInput::Broken(Some(
+                                    "the address did not answer on the host in time".into(),
+                                )));
+                            }
+                        }
+                    }
+                    None => answers_open = false,
                 },
                 _ = &mut self.cancel => break Some(LoginInput::Cancelled),
                 () = &mut deadline => break Some(LoginInput::TimedOut),
@@ -321,11 +393,13 @@ impl SignIns {
         &mut self,
         harness: Harness,
         process: AgentProcess,
+        console: Console,
+        flow: SignInFlow,
         limit: LineLimit,
     ) -> watch::Receiver<Login> {
         self.attempts += 1;
         let attempt = self.attempts;
-        let (talk, handle) = LoginTalk::new(attempt, harness.sign_in_flow());
+        let (talk, handle) = LoginTalk::new(attempt, console, flow);
         let state = handle.state.clone();
         self.last.remove(&harness);
         if let Some(replaced) = self.logins.insert(harness, handle) {
@@ -338,27 +412,53 @@ impl SignIns {
             }
         }
         self.talks.push(
-            talk.run(harness, process, limit)
+            talk.run(harness, flow, process, limit)
                 .map(move |end| (harness, attempt, end))
                 .boxed(),
         );
         state
     }
 
-    /// Hand `code` to `harness`'s login, answering `reply` with its outcome.
-    pub(crate) fn code(&mut self, harness: Harness, code: SignInCode, reply: OutcomeReply) {
+    /// Hand `answer` to `harness`'s login, answering `reply` with its
+    /// outcome: typed into it, or, for an address, opened on the host by
+    /// `open` once it is the one the login waits on.
+    pub(crate) fn answer(
+        &mut self,
+        harness: Harness,
+        answer: SignInAnswer,
+        open: impl FnOnce(&LocalRedirect) -> Opening,
+        reply: OutcomeReply,
+    ) {
         let Some(handle) = self.logins.get_mut(&harness) else {
             let _ = reply.send(Err(SignInError::NoLogin(harness)));
             return;
         };
-        if !handle.state.borrow().awaits_code() {
-            let _ = reply.send(Err(SignInError::NotAwaitingCode));
-            return;
-        }
-        match handle.codes.try_send(code) {
+        let awaiting = handle.state.borrow().awaiting();
+        let secret = answer.text().to_owned();
+        let sent = match awaiting {
+            None => Err(SignInError::NotAwaitingAnswer),
+            Some(Awaiting::Code | Awaiting::Key) => Ok(Answer::Typed {
+                line: answer.line(handle.console),
+                secret,
+            }),
+            Some(Awaiting::Redirect(waited)) => waited
+                .accept(&answer)
+                .map(|address| Answer::Opened {
+                    opening: open(&address),
+                    secret,
+                })
+                .map_err(SignInError::from),
+        };
+        let result = sent.and_then(|sent| {
+            handle
+                .answers
+                .try_send(sent)
+                .map_err(|_| SignInError::NotAwaitingAnswer)
+        });
+        match result {
             Ok(()) => handle.waiting.push(reply),
-            Err(_) => {
-                let _ = reply.send(Err(SignInError::NotAwaitingCode));
+            Err(error) => {
+                let _ = reply.send(Err(error));
             }
         }
     }

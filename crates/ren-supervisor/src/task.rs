@@ -29,6 +29,7 @@ use futures_util::{
     future::BoxFuture,
     stream::{self, BoxStream, FuturesUnordered, SelectAll},
 };
+use ren_harness::sign_in::Console;
 use ren_harness::{
     Harness,
     drive::{DriveEvent, Driver, Opening, Prompt, TurnEnd},
@@ -977,7 +978,7 @@ impl<H: AgentHost> SupervisorTask<H> {
                 sign_ins.state(*harness),
                 crate::sign_in::SignInState::NotChecked
             );
-            if unchecked && harness.sign_in_status().is_some() && self.installed(*harness) {
+            if unchecked && !harness.sign_in_status().is_empty() && self.installed(*harness) {
                 sign_ins.check(*harness, None, || self.status_check(*harness));
             }
         }
@@ -994,25 +995,26 @@ impl<H: AgentHost> SupervisorTask<H> {
         Workdir::confirm(&self.bounds, root.to_path_buf()).map_err(|_| SignInError::NoRoot)
     }
 
-    /// Start `harness`'s status command, read when it ends.
+    /// Start `harness`'s status commands, read when they end.
     fn status_check(
         &self,
         harness: Harness,
     ) -> Result<BoxFuture<'static, crate::sign_in::SignInState>, SignInError> {
-        let plan = harness
-            .sign_in_status()
-            .ok_or(ren_harness::sign_in::SignInRefused::NotOffered(harness))?;
+        let plans = harness.sign_in_status();
         if !self.installed(harness) {
             return Err(SignInError::NotInstalled(harness));
         }
-        let process = self
-            .host
-            .spawn_with_stderr(&plan, &self.root_workdir()?, &self.host.tools())
+        let workdir = self.root_workdir()?;
+        let tools = self.host.tools();
+        let processes = plans
+            .iter()
+            .map(|plan| self.host.spawn_with_stderr(plan, &workdir, &tools))
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|error| {
                 tracing::debug!(%harness, %error, "cannot start a client's status command");
                 SignInError::Spawn
             })?;
-        Ok(StatusCheck::run(harness, process).boxed())
+        Ok(StatusCheck::run(harness, processes).boxed())
     }
 
     /// Carry out a sign-in request.
@@ -1033,21 +1035,38 @@ impl<H: AgentHost> SupervisorTask<H> {
                         if !self.installed(harness) {
                             return Err(SignInError::NotInstalled(harness));
                         }
-                        self.host
-                            .spawn_with_stderr(&plan, &self.root_workdir()?, &self.host.tools())
+                        let workdir = self.root_workdir()?;
+                        let tools = self.host.tools();
+                        let process = match plan.console {
+                            Console::Pipes => {
+                                self.host.spawn_with_stderr(&plan.launch, &workdir, &tools)
+                            }
+                            Console::Terminal => {
+                                self.host.spawn_in_terminal(&plan.launch, &workdir, &tools)
+                            }
+                        };
+                        process
+                            .map(|process| (process, plan.console, plan.flow))
                             .map_err(|error| {
                                 tracing::debug!(%harness, %error, "cannot start a client's login");
                                 SignInError::Spawn
                             })
                     })
-                    .map(|process| sign_ins.login(harness, process, self.line_limit));
+                    .map(|(process, console, flow)| {
+                        sign_ins.login(harness, process, console, flow, self.line_limit)
+                    });
                 let _ = reply.send(started);
             }
-            SignInRequest::Code {
+            SignInRequest::Answer {
                 harness,
-                code,
+                answer,
                 reply,
-            } => sign_ins.code(harness, code, reply),
+            } => sign_ins.answer(
+                harness,
+                answer,
+                |address| self.host.open_local(address),
+                reply,
+            ),
             SignInRequest::Cancel { harness, reply } => {
                 let _ = reply.send(sign_ins.cancel(harness));
             }

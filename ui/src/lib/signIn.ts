@@ -17,7 +17,13 @@ import {
   type Stored,
 } from './decode.ts';
 
-export const SIGN_IN_METHODS = ['claude_subscription', 'anthropic_console', 'chatgpt'] as const;
+export const SIGN_IN_METHODS = [
+  'claude_subscription',
+  'anthropic_console',
+  'chatgpt',
+  'anthropic_api_key',
+  'openai_api_key',
+] as const;
 /** Which account a client signs in with. */
 export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
 export const signInMethod = label(SIGN_IN_METHODS);
@@ -45,7 +51,7 @@ export type LoginEnd =
   | { end: 'exited'; exit: ProcessExit; said: string | null }
   | { end: 'cancelled' }
   | { end: 'timed_out' }
-  | { end: 'broken' }
+  | { end: 'broken'; said: string | null }
   | { end: 'unrecognized'; label: string };
 
 /** One run of a client's login. */
@@ -54,7 +60,11 @@ export type Login =
   | { kind: 'awaiting_code'; link: SignInLink; said: string | null }
   /** A device login: enter `code` on the page at `link`, and approve there. */
   | { kind: 'awaiting_approval'; link: SignInLink; code: string | null; said: string | null }
-  | { kind: 'finishing'; link: SignInLink; said: string | null }
+  /** Asking for an API key. */
+  | { kind: 'awaiting_key'; said: string | null }
+  /** Waiting for the address the browser could not open after approving at `link`. */
+  | { kind: 'awaiting_redirect'; link: SignInLink; said: string | null }
+  | { kind: 'finishing'; link: SignInLink | null; said: string | null }
   | { kind: 'ended'; end: LoginEnd };
 
 /** Where a waited-on login stands: still going, or ended and checked. */
@@ -122,8 +132,9 @@ const loginEnd: Decoder<LoginEnd> = (value, path) => {
       };
     case 'cancelled':
     case 'timed_out':
-    case 'broken':
       return { end };
+    case 'broken':
+      return { end, said: nullable(string)(value.said ?? null, `${path}.said`) };
     default:
       return { end: 'unrecognized', label: end };
   }
@@ -136,8 +147,16 @@ export const login: Decoder<Login> = (value, path) => {
     case 'starting':
       return { kind: 'starting', said: said() };
     case 'awaiting_code':
-    case 'finishing':
+    case 'awaiting_redirect':
       return { kind: value.kind, link: signInLink(value.link, `${path}.link`), said: said() };
+    case 'finishing':
+      return {
+        kind: 'finishing',
+        link: nullable(signInLink)(value.link ?? null, `${path}.link`),
+        said: said(),
+      };
+    case 'awaiting_key':
+      return { kind: 'awaiting_key', said: said() };
     case 'awaiting_approval':
       return {
         kind: 'awaiting_approval',
@@ -186,6 +205,10 @@ export class SignIns {
         return 'Anthropic Console';
       case 'chatgpt':
         return 'ChatGPT account';
+      case 'anthropic_api_key':
+        return 'Anthropic API key';
+      case 'openai_api_key':
+        return 'OpenAI API key';
       default:
         return unrecognised(method);
     }
@@ -248,6 +271,12 @@ export class SignIns {
     return state.kind === 'signed_out';
   }
 
+  /** A client's words as a sentence: ended with a full stop when they are not. */
+  static sentence(text: string): string {
+    const trimmed = text.trim();
+    return /[.!?…]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+
   /** What a login's outcome tells the operator. */
   static outcome(outcome: LoginOutcome, client: string): { ok: boolean; text: string } {
     if (outcome.state.kind === 'signed_in') {
@@ -262,13 +291,18 @@ export class SignIns {
     const end = outcome.end;
     switch (end.end) {
       case 'exited':
-        return { ok: false, text: end.said ? `${end.said} ${after}` : after };
+        return { ok: false, text: end.said ? `${SignIns.sentence(end.said)} ${after}` : after };
       case 'cancelled':
         return { ok: false, text: `The sign-in was cancelled. ${after}` };
       case 'timed_out':
         return { ok: false, text: `The sign-in took too long and was stopped. ${after}` };
       case 'broken':
-        return { ok: false, text: `The sign-in stopped unexpectedly. ${after}` };
+        return {
+          ok: false,
+          text: end.said
+            ? `${SignIns.sentence(end.said)} ${after}`
+            : `The sign-in stopped unexpectedly. ${after}`,
+        };
       case 'unrecognized':
         return { ok: false, text: after };
       default:

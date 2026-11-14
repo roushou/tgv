@@ -10,7 +10,7 @@ use crate::{
 };
 use futures_util::future::BoxFuture;
 use ren_depot::toolset::Generation;
-use ren_harness::launch::LaunchPlan;
+use ren_harness::{launch::LaunchPlan, sign_in::LocalRedirect};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -57,15 +57,30 @@ pub trait AgentHost: Send + Sync + 'static {
         tools: &RunTools,
     ) -> io::Result<AgentProcess>;
 
-    /// Start `plan`, one of a client's own short commands (its login), as
-    /// [`Self::spawn`] does, but with its stdout and stderr read together
-    /// as the process's `stdout`, so what it says on either is read.
+    /// Start `plan`, one of a client's own short commands (its status or
+    /// login), as [`Self::spawn`] does, but with its stdout and stderr read
+    /// together as the process's `stdout`, so what it says on either is read.
     fn spawn_with_stderr(
         &self,
         plan: &LaunchPlan,
         workdir: &Workdir,
         tools: &RunTools,
     ) -> io::Result<AgentProcess>;
+
+    /// Start `plan`, a client's login that needs a terminal, on a
+    /// pseudo-terminal of its own: the process's `stdin` types into it and
+    /// its `stdout` is what it shows.
+    fn spawn_in_terminal(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess>;
+
+    /// Open `address`, a loopback address on this host a client's login
+    /// listens on, as the operator's browser would have: one `GET`, no
+    /// redirects followed.
+    fn open_local(&self, address: &LocalRedirect) -> BoxFuture<'static, io::Result<()>>;
 }
 
 /// The tools a process starts with, as the host read them when it started.

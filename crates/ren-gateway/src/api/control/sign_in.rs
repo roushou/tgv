@@ -18,7 +18,7 @@ use axum::{
 use http::HeaderMap;
 use ren_harness::{
     Harness,
-    sign_in::{SignInCode, SignInMethod, SignInRefused},
+    sign_in::{RedirectRefused, SignInAnswer, SignInMethod, SignInRefused},
 };
 use ren_supervisor::SignInError;
 use std::sync::Arc;
@@ -31,7 +31,8 @@ pub(super) struct StartRequest {
     method: Option<SignInMethod>,
 }
 
-/// The code the sign-in page showed. Not `Debug`: it is a secret.
+/// What the login waits for: the code the page showed, an API key, or the
+/// address the browser could not open. Not `Debug`: it is a secret.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CodeRequest {
@@ -62,7 +63,16 @@ impl RunsApi {
             SignInError::NoRoot => RunRefusal::Disabled,
             SignInError::Spawn => RunRefusal::SpawnFailed,
             SignInError::NoLogin(_) => RunRefusal::Refused("no_sign_in"),
-            SignInError::NotAwaitingCode => RunRefusal::Refused("not_awaiting_code"),
+            SignInError::NotAwaitingAnswer => RunRefusal::Refused("not_awaiting_answer"),
+            SignInError::Redirect(RedirectRefused::NotAnAddress) => {
+                RunRefusal::Refused("redirect_not_an_address")
+            }
+            SignInError::Redirect(RedirectRefused::Elsewhere) => {
+                RunRefusal::Refused("redirect_elsewhere")
+            }
+            SignInError::Redirect(RedirectRefused::Incomplete) => {
+                RunRefusal::Refused("redirect_incomplete")
+            }
             SignInError::Gone => RunRefusal::Unavailable,
         })
     }
@@ -119,7 +129,8 @@ impl RunsApi {
         .into_response())
     }
 
-    /// `POST …/sign-in/code`: hand the page's code to the running login,
+    /// `POST …/sign-in/code`: hand the running login what it waits for (the
+    /// page's code, an API key, or the address the browser could not open),
     /// answering once it has ended and the client's sign-in was checked.
     pub(super) async fn sign_in_code(
         State(api): Api,
@@ -129,10 +140,10 @@ impl RunsApi {
     ) -> Result<Response, Denied> {
         let supervisor = api.admit(&headers)?;
         let harness = Self::harness(&harness)?;
-        let code = SignInCode::parse(&Self::body(body)?.code)
+        let answer = SignInAnswer::parse(&Self::body(body)?.code)
             .map_err(|_| Denied::Control(Refusal::Invalid))?;
         let outcome = supervisor
-            .sign_in_code(harness, code)
+            .answer_sign_in(harness, answer)
             .await
             .map_err(Self::sign_in_refused)?;
         Ok(Json(serde_json::json!({

@@ -86,14 +86,20 @@ impl AgentHost for ScriptedHost {
         let (agent_out, stdout) = tokio::io::duplex(64 * 1024);
         let (exit_tx, exit_rx) = oneshot::channel();
         let (kill, signal) = KillSwitch::pair();
-        let arguments: Vec<String> = plan
-            .command(None, &[])
+        let command = plan.command(None, &[]);
+        let program = command.get_program().to_string_lossy().into_owned();
+        let arguments: Vec<String> = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect();
-        match arguments.first().map(String::as_str) {
-            Some("auth") => tokio::spawn(auth(arguments, agent_in, agent_out, signal, exit_tx)),
-            Some("login") => tokio::spawn(login(arguments, agent_out, signal, exit_tx)),
+        match (program.as_str(), arguments.first().map(String::as_str)) {
+            ("claude", Some("auth")) => {
+                tokio::spawn(auth(arguments, agent_in, agent_out, signal, exit_tx))
+            }
+            ("codex", Some("login")) => tokio::spawn(login(arguments, agent_out, signal, exit_tx)),
+            ("pi" | "opencode", Some("auth")) => tokio::spawn(other_auth(
+                program, arguments, agent_in, agent_out, signal, exit_tx,
+            )),
             _ => tokio::spawn(serve(agent_in, agent_out, signal, exit_tx)),
         };
         Ok(AgentProcess {
@@ -112,6 +118,22 @@ impl AgentHost for ScriptedHost {
     ) -> io::Result<AgentProcess> {
         // Scripted processes write everything to the one stream.
         self.spawn(plan, workdir, tools)
+    }
+
+    fn spawn_in_terminal(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        self.spawn(plan, workdir, tools)
+    }
+
+    fn open_local(
+        &self,
+        _address: &ren_harness::sign_in::LocalRedirect,
+    ) -> futures_util::future::BoxFuture<'static, io::Result<()>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -179,6 +201,70 @@ async fn login(
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         out.write_all(b"Successfully logged in\n").await.unwrap();
         ProcessExit::Code(0)
+    };
+    let status = tokio::select! {
+        status = script => status,
+        () = kill.fired() => ProcessExit::Signal(9),
+    };
+    drop(out);
+    let _ = exit.send(status);
+}
+
+/// Pi's `auth check` (never ready) and `auth login <p> --api-key` (a
+/// prompt, then the key saved), and OpenCode's `auth list` (none) and
+/// `auth login openai --method chatgpt-token-sharing` (a link that sends to
+/// 127.0.0.1, then done a moment later).
+async fn other_auth(
+    program: String,
+    arguments: Vec<String>,
+    input: DuplexStream,
+    mut out: DuplexStream,
+    kill: KillSignal,
+    exit: oneshot::Sender<ProcessExit>,
+) {
+    let script = async {
+        let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        match (program.as_str(), words.as_slice()) {
+            ("pi", ["auth", "check", "--provider", provider, ..]) => {
+                let line = format!(
+                    "{{\"status\":\"not_ready\",\"provider\":\"{provider}\",\"reason\":\"credentials_not_configured\"}}\n"
+                );
+                out.write_all(line.as_bytes()).await.unwrap();
+                ProcessExit::Code(1)
+            }
+            ("pi", ["auth", "login", _, "--api-key"]) => {
+                out.write_all(b"Enter Anthropic API key: ").await.unwrap();
+                // Typed on a terminal: Enter is a carriage return.
+                let mut key = Vec::new();
+                let mut reader = BufReader::new(input);
+                match reader.read_until(b'\r', &mut key).await {
+                    Ok(read) if read > 1 => {
+                        out.write_all(b"\r\nSaved API key for Anthropic.\r\n")
+                            .await
+                            .unwrap();
+                        ProcessExit::Code(0)
+                    }
+                    Ok(_) | Err(_) => ProcessExit::Code(1),
+                }
+            }
+            ("opencode", ["auth", "list", ..]) => {
+                out.write_all(b"No authenticated integrations\n")
+                    .await
+                    .unwrap();
+                ProcessExit::Code(0)
+            }
+            ("opencode", ["auth", "login", ..]) => {
+                out.write_all(
+                    b"Complete authorization in your browser.\nhttps://login.example.test/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A39547%2Fauth%2Fcallback&state=acme\nWaiting for authorization...\n",
+                )
+                .await
+                .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                out.write_all(b"Connected to OpenAI\n").await.unwrap();
+                ProcessExit::Code(0)
+            }
+            _ => ProcessExit::Code(2),
+        }
     };
     let status = tokio::select! {
         status = script => status,

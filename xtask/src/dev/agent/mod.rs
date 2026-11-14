@@ -45,7 +45,7 @@ pub enum AgentError {
     SignedOut,
 }
 
-pub use auth::{FakeClaudeAuth, FakeCodexAuth};
+pub use auth::{FakeClaudeAuth, FakeCodexAuth, FakeOpenCodeAuth, FakePiAuth};
 
 /// The client a fake agent plays.
 #[derive(Debug, Clone, Copy, ValueEnum)]

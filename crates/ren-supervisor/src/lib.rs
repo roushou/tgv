@@ -48,7 +48,7 @@ use ren_harness::{
     lines::LineLimit,
     models::Model,
     settings::RunSettings,
-    sign_in::{SignInCode, SignInMethod},
+    sign_in::{SignInAnswer, SignInMethod},
 };
 use ren_protocol::native::NativeThreadId;
 use ren_recorder::{
@@ -368,9 +368,9 @@ pub(crate) enum SignInRequest {
         method: SignInMethod,
         reply: oneshot::Sender<Result<tokio::sync::watch::Receiver<Login>, SignInError>>,
     },
-    Code {
+    Answer {
         harness: Harness,
-        code: SignInCode,
+        answer: SignInAnswer,
         reply: login::OutcomeReply,
     },
     Cancel {
@@ -540,7 +540,8 @@ impl Supervisor {
     }
 
     /// Start `harness`'s own login with `method`, replacing any running
-    /// one. Answers once it prints its link (and a device login its code),
+    /// one. Answers once it shows what the operator needs (its link, a
+    /// device login's code, or its key prompt),
     /// or with how it stands after [`Self::LINK_WAIT`].
     pub async fn sign_in(
         &self,
@@ -565,16 +566,18 @@ impl Supervisor {
         })
     }
 
-    /// Hand the code the sign-in page showed to `harness`'s login. Answers
-    /// once the login has ended and the client's sign-in was checked.
-    pub async fn sign_in_code(
+    /// Hand `answer` to `harness`'s login: the code the page showed, an API
+    /// key, or the address the browser could not open (opened on this host
+    /// when it is the one the login waits on). Answers once the login has
+    /// ended and the client's sign-in was checked.
+    pub async fn answer_sign_in(
         &self,
         harness: Harness,
-        code: SignInCode,
+        answer: SignInAnswer,
     ) -> Result<LoginOutcome, SignInError> {
-        self.sign_in_request(|reply| SignInRequest::Code {
+        self.sign_in_request(|reply| SignInRequest::Answer {
             harness,
-            code,
+            answer,
             reply,
         })
         .await

@@ -1,4 +1,5 @@
-//! A fake `claude auth` and `codex login` for the dev slot, so the sign-in
+//! A fake `claude auth`, `codex login`, `pi auth`, and `opencode auth` for
+//! the dev slot, so the sign-in
 //! sheet can be tried with no real account. `claude auth status --json` says
 //! whether a fake login took its code, and `claude auth login` prints Claude
 //! Code's lines with an invented link, reads the code, and signs in only for
@@ -8,7 +9,9 @@
 //! [`FakeCodexAuth::APPROVED_AFTER`]. Both start signed in, so the slot's
 //! sessions work; a `claude-signed-out` or `codex-signed-out` file in the
 //! slot's data directory (or the fake `logout`) signs one out, to try its
-//! sign-in, and a fake login removes it. Neither keeps a credential.
+//! sign-in, and a fake login removes it. The fake `pi auth` and `opencode
+//! auth` ([`FakePiAuth`], [`FakeOpenCodeAuth`]) work the same way with
+//! `pi-signed-out` and `opencode-signed-out`. None keeps a credential.
 
 use super::AgentError;
 use std::{
@@ -24,7 +27,7 @@ impl FakeClaudeAuth {
     const LINK: &'static str = "https://login.example.test/claude/authorize?state=dev-slot";
 
     /// Signed in: the signed-out marker removed.
-    fn signed_in(marker: &Path) -> Result<(), AgentError> {
+    pub(crate) fn signed_in(marker: &Path) -> Result<(), AgentError> {
         match std::fs::remove_file(marker) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -116,6 +119,144 @@ impl FakeCodexAuth {
             }
             Some("logout") => std::fs::write(&marker, b"").map_err(AgentError::Stdio),
             Some(_) | None => Err(AgentError::NoSession),
+        }
+    }
+}
+
+/// A fake `pi auth`: `check` says its ChatGPT provider is ready unless the
+/// `pi-signed-out` marker is there; `login openai-codex --no-browser` shows
+/// an invented link and code and "approves" after
+/// [`FakeCodexAuth::APPROVED_AFTER`]; `login <provider> --api-key` asks for
+/// a key and saves nothing.
+pub struct FakePiAuth;
+
+impl FakePiAuth {
+    pub fn asked(arguments: &[String]) -> bool {
+        arguments.first().is_some_and(|first| first == "auth")
+    }
+
+    pub fn run(data_dir: &Path, arguments: &[String]) -> Result<(), AgentError> {
+        let marker = data_dir.join("pi-signed-out");
+        let mut out = std::io::stdout().lock();
+        let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        match words.as_slice() {
+            ["auth", "check", "--provider", provider, ..] => {
+                let ready = *provider == "openai-codex" && !marker.exists();
+                let status = if ready {
+                    serde_json::json!({ "status": "ready", "provider": provider, "authType": "oauth" })
+                } else {
+                    serde_json::json!({ "status": "not_ready", "provider": provider,
+                                        "reason": "credentials_not_configured" })
+                };
+                writeln!(out, "{status}").map_err(AgentError::Stdio)?;
+                if ready {
+                    Ok(())
+                } else {
+                    Err(AgentError::SignedOut)
+                }
+            }
+            ["auth", "login", _, "--no-browser"] => {
+                write!(
+                    out,
+                    "Select OpenAI Codex login method: Device code login (headless)\r\nOpen https://login.example.test/pi/device and enter code: ACME-5678\r\nWaiting for authentication...\r\n"
+                )
+                .and_then(|()| out.flush())
+                .map_err(AgentError::Stdio)?;
+                std::thread::sleep(FakeCodexAuth::APPROVED_AFTER);
+                FakeClaudeAuth::signed_in(&marker)?;
+                writeln!(out, "Logged in to ChatGPT.\r").map_err(AgentError::Stdio)
+            }
+            ["auth", "login", provider, "--api-key"] => {
+                write!(out, "Enter {provider} API key: ")
+                    .and_then(|()| out.flush())
+                    .map_err(AgentError::Stdio)?;
+                let mut key = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut key)
+                    .map_err(AgentError::Stdio)?;
+                FakeClaudeAuth::signed_in(&marker)?;
+                writeln!(out, "\r\nSaved API key for {provider}.\r").map_err(AgentError::Stdio)
+            }
+            ["auth", "logout", ..] => std::fs::write(&marker, b"").map_err(AgentError::Stdio),
+            _ => Err(AgentError::NoSession),
+        }
+    }
+}
+
+/// A fake `opencode auth`: `list` holds an OpenAI integration unless the
+/// `opencode-signed-out` marker is there; `login openai --method
+/// chatgpt-token-sharing` listens on a loopback port, prints a link that
+/// sends there, and finishes once that address is opened (as the daemon
+/// does with the address the operator pastes); `--method key` asks for a
+/// key and saves nothing.
+pub struct FakeOpenCodeAuth;
+
+impl FakeOpenCodeAuth {
+    pub fn asked(arguments: &[String]) -> bool {
+        arguments.first().is_some_and(|first| first == "auth")
+    }
+
+    pub fn run(data_dir: &Path, arguments: &[String]) -> Result<(), AgentError> {
+        let marker = data_dir.join("opencode-signed-out");
+        let mut out = std::io::stdout().lock();
+        let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        match words.as_slice() {
+            ["auth", "list", ..] => if marker.exists() {
+                writeln!(out, "No authenticated integrations")
+            } else {
+                writeln!(out, "OpenAI  ChatGPT   stored")
+            }
+            .map_err(AgentError::Stdio),
+            ["auth", "login", _, .., "chatgpt-token-sharing"] => {
+                let listener =
+                    std::net::TcpListener::bind("127.0.0.1:0").map_err(AgentError::Stdio)?;
+                let port = listener.local_addr().map_err(AgentError::Stdio)?.port();
+                write!(
+                    out,
+                    "│\n●  Complete authorization in your browser.\n│\n●  https://login.example.test/opencode/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A{port}%2Fauth%2Fcallback&state=dev\n│\n◇  Waiting for authorization...\n"
+                )
+                .and_then(|()| out.flush())
+                .map_err(AgentError::Stdio)?;
+                let (mut stream, _) = listener.accept().map_err(AgentError::Stdio)?;
+                let mut request = [0; 2048];
+                let read =
+                    std::io::Read::read(&mut stream, &mut request).map_err(AgentError::Stdio)?;
+                let line =
+                    String::from_utf8_lossy(request.get(..read).unwrap_or_default()).into_owned();
+                let approved = line.starts_with("GET /auth/callback?") && line.contains("code=");
+                let body = if approved {
+                    "Signed in."
+                } else {
+                    "Not signed in."
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .map_err(AgentError::Stdio)?;
+                if !approved {
+                    return Err(AgentError::LoginRefused);
+                }
+                FakeClaudeAuth::signed_in(&marker)?;
+                writeln!(out, "◇  Connected to OpenAI\n└  Done").map_err(AgentError::Stdio)
+            }
+            ["auth", "login", provider, .., "key"] => {
+                write!(out, "◆  Enter your {provider} API key\n│  ")
+                    .and_then(|()| out.flush())
+                    .map_err(AgentError::Stdio)?;
+                let mut key = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut key)
+                    .map_err(AgentError::Stdio)?;
+                FakeClaudeAuth::signed_in(&marker)?;
+                writeln!(out, "\r\n◇  Connected to {provider}\r\n└  Done\r")
+                    .map_err(AgentError::Stdio)
+            }
+            ["auth", "logout", ..] => std::fs::write(&marker, b"").map_err(AgentError::Stdio),
+            _ => Err(AgentError::NoSession),
         }
     }
 }

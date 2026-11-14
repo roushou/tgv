@@ -239,6 +239,22 @@ impl AgentHost for FakeHost {
             kill,
         })
     }
+
+    fn spawn_in_terminal(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        self.spawn_with_stderr(plan, workdir, tools)
+    }
+
+    fn open_local(
+        &self,
+        _address: &ren_harness::sign_in::LocalRedirect,
+    ) -> futures_util::future::BoxFuture<'static, io::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 async fn send(out: &mut DuplexStream, message: Value) {

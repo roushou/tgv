@@ -209,10 +209,11 @@ async fn a_session_is_started_prompted_approved_and_stopped_through_the_control_
               "midway": ["steer", "model", "effort", "approvals"],
               "sign_in": { "kind": "signed_out" }, "sign_in_methods": ["chatgpt"] },
             { "harness": "pi", "status": "ready", "approvals": [], "midway": ["steer", "model", "effort"],
-              "sign_in": { "kind": "not_checked" }, "sign_in_methods": [] },
+              "sign_in": { "kind": "signed_out" },
+              "sign_in_methods": ["chatgpt", "anthropic_api_key", "openai_api_key"] },
             { "harness": "opencode", "status": "ready", "approvals": ["ask", "edits"],
-              "midway": ["steer", "model", "effort"], "sign_in": { "kind": "not_checked" },
-              "sign_in_methods": [] },
+              "midway": ["steer", "model", "effort"], "sign_in": { "kind": "signed_out" },
+              "sign_in_methods": ["chatgpt", "anthropic_api_key", "openai_api_key"] },
         ])
     );
 
@@ -1026,11 +1027,13 @@ async fn a_client_is_signed_in_through_its_own_login_relayed_by_the_control_api(
         (status, body["error"].clone()),
         (StatusCode::CONFLICT, json!("no_sign_in"))
     );
-    let (status, body) = control.post("/runs/clients/pi/sign-in", json!({})).await;
-    assert_eq!(
-        (status, body["error"].clone()),
-        (StatusCode::CONFLICT, json!("sign_in_not_offered"))
-    );
+    let (status, _) = control
+        .post(
+            "/runs/clients/pi/sign-in",
+            json!({ "method": "claude_subscription" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = control
         .post(&format!("{sign_in}/code"), json!({ "code": "" }))
         .await;
@@ -1070,7 +1073,7 @@ async fn a_device_login_shows_its_code_and_is_waited_on_until_it_ends() {
         .await;
     assert_eq!(
         (status, body["error"].clone()),
-        (StatusCode::CONFLICT, json!("not_awaiting_code"))
+        (StatusCode::CONFLICT, json!("not_awaiting_answer"))
     );
 
     // Approved, it ends by itself; the status check after it decides.
@@ -1086,4 +1089,78 @@ async fn a_device_login_shows_its_code_and_is_waited_on_until_it_ends() {
     // Asked again after it ended, the same outcome.
     let (_, again) = control.post(&format!("{sign_in}/wait"), json!({})).await;
     assert_eq!(again["waited"], body["waited"]);
+}
+
+#[tokio::test]
+async fn a_key_is_typed_into_the_login_and_a_redirect_is_opened_only_when_it_is_the_one_waited_on()
+{
+    let upstream = mock(Router::new()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = TestGateway::with_runs(
+        &config(&upstream),
+        dir.path(),
+        vec![PathBuf::from("/work")],
+        ScriptedHost,
+    )
+    .await;
+    let control = Control::new(&gateway);
+
+    // Pi's API key: asked for at once, typed into its login, never answered with.
+    let pi = "/runs/clients/pi/sign-in";
+    let (status, body) = control
+        .post(pi, json!({ "method": "anthropic_api_key" }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["login"],
+        json!({ "kind": "awaiting_key", "said": null })
+    );
+    let (status, body) = control
+        .post(
+            &format!("{pi}/code"),
+            json!({ "code": "sk-ant-acme-not-a-key" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["outcome"]["end"],
+        json!({ "end": "exited", "exit": { "kind": "code", "value": 0 },
+                "said": "Saved API key for Anthropic." })
+    );
+    assert!(!body.to_string().contains("sk-ant-acme"));
+
+    // OpenCode's token sharing: the address pasted back must be the one its
+    // link sends to.
+    let opencode = "/runs/clients/opencode/sign-in";
+    let (status, body) = control.post(opencode, json!({ "method": "chatgpt" })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["login"]["kind"], "awaiting_redirect");
+    for (pasted, refused) in [
+        (
+            "http://127.0.0.1:1/auth/callback?code=c&state=s",
+            "redirect_elsewhere",
+        ),
+        (
+            "http://127.0.0.1:39547/auth/callback?error=denied",
+            "redirect_incomplete",
+        ),
+        ("approved", "redirect_not_an_address"),
+    ] {
+        let (status, body) = control
+            .post(&format!("{opencode}/code"), json!({ "code": pasted }))
+            .await;
+        assert_eq!(
+            (status, body["error"].clone()),
+            (StatusCode::CONFLICT, json!(refused))
+        );
+    }
+    let (status, body) = control
+        .post(
+            &format!("{opencode}/code"),
+            json!({ "code": "http://127.0.0.1:39547/auth/callback?code=acme&state=acme" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["outcome"]["end"]["said"], "Connected to OpenAI");
+    assert_eq!(body["outcome"]["state"], json!({ "kind": "signed_out" }));
 }

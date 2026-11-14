@@ -1572,6 +1572,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pty-process"
+version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f0cff49b5194f464ce14bfaef7d6dba180889934e9bfa37ca5f2528ea515c0b"
+dependencies = [
+ "rustix",
+ "tokio",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1764,6 +1774,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "ignore",
+ "pty-process",
  "ren-depot",
  "ren-gateway",
  "ren-harness",
@@ -1772,6 +1783,7 @@ dependencies = [
  "ren-store",
  "ren-supervisor",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.1",

@@ -7,7 +7,7 @@
 
 use crate::run::ProcessExit;
 use ren_harness::sign_in::{
-    DeviceCode, LoginEvent, SignInFlow, SignInLink, Standing, StatedMethod,
+    DeviceCode, LocalRedirect, LoginEvent, SignInFlow, SignInLink, Standing, StatedMethod,
 };
 use serde::Serialize;
 
@@ -51,7 +51,7 @@ pub enum Login {
         flow: SignInFlow,
         said: Option<String>,
     },
-    /// Waiting for the code the page at `link` shows (a paste-code login).
+    /// Waiting for the code the page at `link` shows.
     AwaitingCode {
         link: SignInLink,
         said: Option<String>,
@@ -63,12 +63,34 @@ pub enum Login {
         code: Option<DeviceCode>,
         said: Option<String>,
     },
-    /// The code was handed to the client; waiting for it to finish.
-    Finishing {
+    /// Waiting for an API key.
+    AwaitingKey {
+        said: Option<String>,
+    },
+    /// Waiting for the address the browser could not open after approving
+    /// at `link`, to open it on the host.
+    AwaitingRedirect {
         link: SignInLink,
         said: Option<String>,
     },
+    /// The answer was handed to the client; waiting for it to finish.
+    Finishing {
+        link: Option<SignInLink>,
+        said: Option<String>,
+    },
     Ended(LoginEnd),
+}
+
+/// What a login waits for from the operator now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Awaiting {
+    /// The code the page showed, typed into the login.
+    Code,
+    /// An API key, typed into the login.
+    Key,
+    /// The address the browser could not open, opened on the host when it
+    /// is `redirect`.
+    Redirect(LocalRedirect),
 }
 
 /// How a login ended. Whether the client is signed in after it is what the
@@ -83,51 +105,68 @@ pub enum LoginEnd {
     },
     /// The operator cancelled it, or a newer login replaced it.
     Cancelled,
-    /// No code or approval came, or the client did not finish, in time.
+    /// No answer or approval came, or the client did not finish, in time.
     TimedOut,
-    /// Its output ended unreadably or its stdin closed: it was stopped.
-    Broken,
+    /// Its output ended unreadably, its input closed, or the address could
+    /// not be opened: it was stopped, having last said `said`.
+    Broken { said: Option<String> },
 }
 
 /// What happens to a login.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginInput {
     Printed(LoginEvent),
-    /// The operator's code was written to its stdin.
-    CodeSent,
+    /// The operator's answer was handed to it.
+    Answered,
     Exited(ProcessExit),
     Cancelled,
     TimedOut,
-    Broken,
+    Broken(Option<String>),
 }
 
 /// A login input that its state does not take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum LoginRefused {
-    #[error("the sign-in is not waiting for a code")]
-    NotAwaitingCode,
+    #[error("the sign-in is not waiting for an answer")]
+    NotAwaitingAnswer,
     #[error("the sign-in has ended")]
     Ended,
 }
 
 impl Login {
-    /// A login just started, going as `flow` says.
+    /// A login just started, going as `flow` says: a key login asks for its
+    /// key at once.
     pub fn start(flow: SignInFlow) -> Self {
-        Self::Starting { flow, said: None }
+        match flow {
+            SignInFlow::EnterKey => Self::AwaitingKey { said: None },
+            SignInFlow::PasteCode | SignInFlow::DeviceCode | SignInFlow::PasteRedirect => {
+                Self::Starting { flow, said: None }
+            }
+        }
     }
 
-    /// Whether the code can be handed over now.
-    pub fn awaits_code(&self) -> bool {
-        matches!(self, Self::AwaitingCode { .. })
+    /// What the login waits for from the operator now, if anything.
+    pub fn awaiting(&self) -> Option<Awaiting> {
+        match self {
+            Self::AwaitingCode { .. } => Some(Awaiting::Code),
+            Self::AwaitingKey { .. } => Some(Awaiting::Key),
+            Self::AwaitingRedirect { link, .. } => link.redirect().map(Awaiting::Redirect),
+            Self::Starting { .. }
+            | Self::AwaitingApproval { .. }
+            | Self::Finishing { .. }
+            | Self::Ended(_) => None,
+        }
     }
 
-    /// Whether the operator has what they need to go on: the link, and a
-    /// device login's code.
+    /// Whether the operator has what they need to go on: the link, a device
+    /// login's code, or the key prompt.
     pub fn shown(&self) -> bool {
         match self {
             Self::Starting { .. } | Self::AwaitingApproval { code: None, .. } => false,
             Self::AwaitingCode { .. }
             | Self::AwaitingApproval { code: Some(_), .. }
+            | Self::AwaitingKey { .. }
+            | Self::AwaitingRedirect { .. }
             | Self::Finishing { .. }
             | Self::Ended(_) => true,
         }
@@ -138,7 +177,7 @@ impl Login {
     }
 
     /// The state after `input`. Ending inputs end any state but an ended
-    /// one; a code is taken only while one is awaited.
+    /// one; an answer is taken only while one is awaited.
     pub fn apply(self, input: LoginInput) -> Result<Self, LoginRefused> {
         if self.ended() {
             return Err(LoginRefused::Ended);
@@ -153,6 +192,8 @@ impl Login {
                         code: None,
                         said,
                     },
+                    SignInFlow::PasteRedirect => Self::AwaitingRedirect { link, said },
+                    SignInFlow::EnterKey => Self::AwaitingKey { said },
                 }
             }
             // A second link (the reader yields one) changes nothing.
@@ -171,23 +212,32 @@ impl Login {
             },
             // A code before its link, or a second one, changes nothing.
             (state, LoginInput::Printed(LoginEvent::DeviceCode(_))) => state,
-            (Self::AwaitingCode { link, said }, LoginInput::CodeSent) => {
-                Self::Finishing { link, said }
+            (
+                Self::AwaitingCode { link, said } | Self::AwaitingRedirect { link, said },
+                LoginInput::Answered,
+            ) => Self::Finishing {
+                link: Some(link),
+                said,
+            },
+            (Self::AwaitingKey { said }, LoginInput::Answered) => {
+                Self::Finishing { link: None, said }
             }
             (
                 Self::Starting { .. }
                 | Self::AwaitingApproval { .. }
                 | Self::Finishing { .. }
                 | Self::Ended(_),
-                LoginInput::CodeSent,
-            ) => return Err(LoginRefused::NotAwaitingCode),
+                LoginInput::Answered,
+            ) => return Err(LoginRefused::NotAwaitingAnswer),
             (state, LoginInput::Exited(exit)) => Self::Ended(LoginEnd::Exited {
                 exit,
                 said: state.said().map(str::to_owned),
             }),
             (_, LoginInput::Cancelled) => Self::Ended(LoginEnd::Cancelled),
             (_, LoginInput::TimedOut) => Self::Ended(LoginEnd::TimedOut),
-            (_, LoginInput::Broken) => Self::Ended(LoginEnd::Broken),
+            (state, LoginInput::Broken(reason)) => Self::Ended(LoginEnd::Broken {
+                said: reason.or_else(|| state.said().map(str::to_owned)),
+            }),
         })
     }
 
@@ -196,6 +246,8 @@ impl Login {
             Self::Starting { said, .. }
             | Self::AwaitingCode { said, .. }
             | Self::AwaitingApproval { said, .. }
+            | Self::AwaitingKey { said }
+            | Self::AwaitingRedirect { said, .. }
             | Self::Finishing { said, .. } => said.as_deref(),
             Self::Ended(_) => None,
         }
@@ -209,6 +261,8 @@ impl Login {
             Self::AwaitingApproval { link, code, .. } => {
                 Self::AwaitingApproval { link, code, said }
             }
+            Self::AwaitingKey { .. } => Self::AwaitingKey { said },
+            Self::AwaitingRedirect { link, .. } => Self::AwaitingRedirect { link, said },
             Self::Finishing { link, .. } => Self::Finishing { link, said },
             Self::Ended(end) => Self::Ended(end),
         }
@@ -232,38 +286,55 @@ pub struct LoginOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::{Login, LoginEnd, LoginInput, LoginRefused};
+    use super::{Awaiting, Login, LoginEnd, LoginInput, LoginRefused};
     use crate::run::ProcessExit;
-    use ren_harness::sign_in::SignInFlow;
     use ren_harness::{
+        Harness,
         lines::Framed,
-        sign_in::{LoginEvent, LoginReader},
+        sign_in::{LoginEvent, LoginReader, SignInFlow},
     };
 
-    fn printed(text: &str) -> LoginInput {
-        let event = LoginReader::new(ren_harness::Harness::ClaudeCode)
-            .receive(Framed::Line(text.as_bytes().to_vec()))
-            .unwrap();
-        LoginInput::Printed(event)
+    /// Feed `lines` as `harness`'s login printed them.
+    fn printed(harness: Harness, flow: SignInFlow, lines: &[&str]) -> Vec<LoginInput> {
+        let mut reader = LoginReader::new(harness, flow);
+        lines
+            .iter()
+            .flat_map(|text| reader.receive(Framed::Line(text.as_bytes().to_vec())))
+            .map(LoginInput::Printed)
+            .collect()
+    }
+
+    fn run(mut login: Login, inputs: Vec<LoginInput>) -> Login {
+        for input in inputs {
+            login = login.apply(input).unwrap();
+        }
+        login
     }
 
     #[test]
-    fn a_login_waits_for_its_code_then_ends_with_what_it_said() {
-        let login = Login::start(SignInFlow::PasteCode)
-            .apply(printed("Opening browser to sign in"))
-            .unwrap()
-            .apply(printed("visit: https://example.com/authorize"))
-            .unwrap();
-        assert!(login.awaits_code());
-        let login = login
-            .apply(LoginInput::CodeSent)
-            .unwrap()
-            .apply(printed("Login failed: That code wasn't accepted."))
-            .unwrap()
-            .apply(LoginInput::Exited(ProcessExit::Code(1)))
-            .unwrap();
+    fn a_paste_code_login_waits_for_its_code_then_ends_with_what_it_said() {
+        let flow = SignInFlow::PasteCode;
+        let login = run(
+            Login::start(flow),
+            printed(
+                Harness::ClaudeCode,
+                flow,
+                &[
+                    "Opening browser to sign in",
+                    "visit: https://example.com/authorize",
+                ],
+            ),
+        );
+        assert_eq!(login.awaiting(), Some(Awaiting::Code));
+        let mut inputs = vec![LoginInput::Answered];
+        inputs.extend(printed(
+            Harness::ClaudeCode,
+            flow,
+            &["Login failed: That code wasn't accepted."],
+        ));
+        inputs.push(LoginInput::Exited(ProcessExit::Code(1)));
         assert_eq!(
-            login,
+            run(login, inputs),
             Login::Ended(LoginEnd::Exited {
                 exit: ProcessExit::Code(1),
                 said: Some("Login failed: That code wasn't accepted.".into()),
@@ -272,14 +343,13 @@ mod tests {
     }
 
     #[test]
-    fn a_code_is_refused_unless_awaited_and_an_ended_login_takes_nothing() {
+    fn an_answer_is_refused_unless_awaited_and_an_ended_login_takes_nothing() {
+        let flow = SignInFlow::PasteCode;
         assert_eq!(
-            Login::start(SignInFlow::PasteCode).apply(LoginInput::CodeSent),
-            Err(LoginRefused::NotAwaitingCode)
+            Login::start(flow).apply(LoginInput::Answered),
+            Err(LoginRefused::NotAwaitingAnswer)
         );
-        let ended = Login::start(SignInFlow::PasteCode)
-            .apply(LoginInput::Cancelled)
-            .unwrap();
+        let ended = Login::start(flow).apply(LoginInput::Cancelled).unwrap();
         assert_eq!(ended, Login::Ended(LoginEnd::Cancelled));
         assert_eq!(
             ended.apply(LoginInput::Exited(ProcessExit::Code(0))),
@@ -288,42 +358,16 @@ mod tests {
     }
 
     #[test]
-    fn a_second_link_keeps_the_first() {
-        let login = Login::start(SignInFlow::PasteCode)
-            .apply(printed("visit: https://example.com/first"))
-            .unwrap()
-            .apply(LoginInput::Printed(LoginEvent::Link(
-                ren_harness::sign_in::SignInLink::find("https://example.com/second").unwrap(),
-            )))
-            .unwrap();
-        let Login::AwaitingCode { link, .. } = login else {
-            panic!("not awaiting");
-        };
-        assert_eq!(link.as_str(), "https://example.com/first");
-    }
-
-    #[test]
     fn a_device_login_waits_for_approval_once_its_code_is_shown() {
-        let device = |text: &str| {
-            let event = LoginReader::new(ren_harness::Harness::Codex)
-                .receive(Framed::Line(text.as_bytes().to_vec()));
-            event.map(LoginInput::Printed)
-        };
-        let mut reader = LoginReader::new(ren_harness::Harness::Codex);
-        let mut feed = |text: &str| {
-            LoginInput::Printed(
-                reader
-                    .receive(Framed::Line(text.as_bytes().to_vec()))
-                    .unwrap(),
-            )
-        };
-        let login = Login::start(SignInFlow::DeviceCode)
-            .apply(feed("https://auth.example.test/device"))
-            .unwrap();
+        let flow = SignInFlow::DeviceCode;
+        let login = run(
+            Login::start(flow),
+            printed(Harness::Codex, flow, &["https://auth.example.test/device"]),
+        );
         assert!(!login.shown());
-        let login = login.apply(feed("ACME-12345")).unwrap();
+        let login = run(login, printed(Harness::Codex, flow, &["ACME-12345"]));
         assert!(login.shown());
-        assert!(!login.awaits_code());
+        assert_eq!(login.awaiting(), None);
         let Login::AwaitingApproval {
             code: Some(code), ..
         } = &login
@@ -331,15 +375,64 @@ mod tests {
             panic!("no code: {login:?}");
         };
         assert_eq!(code.as_str(), "ACME-12345");
-        // Nothing is pasted into a device login.
+        // Nothing is typed into a device login.
         assert_eq!(
-            login.clone().apply(LoginInput::CodeSent),
-            Err(LoginRefused::NotAwaitingCode)
+            login.clone().apply(LoginInput::Answered),
+            Err(LoginRefused::NotAwaitingAnswer)
         );
         let ended = login
             .apply(LoginInput::Exited(ProcessExit::Code(0)))
             .unwrap();
         assert!(matches!(ended, Login::Ended(LoginEnd::Exited { .. })));
-        assert!(device("plain words").is_some());
+    }
+
+    #[test]
+    fn a_key_login_asks_at_once_and_finishes_with_no_link() {
+        let login = Login::start(SignInFlow::EnterKey);
+        assert!(login.shown());
+        assert_eq!(login.awaiting(), Some(Awaiting::Key));
+        let login = login.apply(LoginInput::Answered).unwrap();
+        assert_eq!(
+            login,
+            Login::Finishing {
+                link: None,
+                said: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_redirect_login_waits_on_the_address_its_link_sends_to() {
+        let flow = SignInFlow::PasteRedirect;
+        let login = run(
+            Login::start(flow),
+            printed(
+                Harness::OpenCode,
+                flow,
+                &[
+                    "https://auth.example.test/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A39547%2Fauth%2Fcallback&state=s",
+                ],
+            ),
+        );
+        let Some(Awaiting::Redirect(redirect)) = login.awaiting() else {
+            panic!("not awaiting a redirect: {login:?}");
+        };
+        assert_eq!(redirect.as_str(), "http://127.0.0.1:39547/auth/callback");
+        // Stopped because the address could not be opened, it says why.
+        let broken = login
+            .apply(LoginInput::Broken(Some(
+                "the address could not be opened".into(),
+            )))
+            .unwrap();
+        assert_eq!(
+            broken,
+            Login::Ended(LoginEnd::Broken {
+                said: Some("the address could not be opened".into())
+            })
+        );
+        assert!(matches!(
+            printed(Harness::OpenCode, flow, &["Done"]).as_slice(),
+            [LoginInput::Printed(LoginEvent::Said(_))]
+        ));
     }
 }

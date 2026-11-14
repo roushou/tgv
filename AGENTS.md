@@ -237,12 +237,14 @@ dependencies under "Crates" below. Read the code for current module ownership.
   and which settings change from the next turn); the commands a client
   offers a prompt (`commands`: `ClientCommand`, each codec reading its
   client's own list); a client's own sign-in commands (`sign_in`: the
-  `SignInMethod`s each offers and its `SignInFlow` (paste a code back, or a
-  device code approved on the page), its status read as a `Standing`, its
-  login read by `LoginReader`, the `https` `SignInLink` it prints, a device
-  login's `DeviceCode`, and the `SignInCode` handed back, a secret never
-  shown; Claude Code's in `claude_code`'s `auth`, Codex's in `codex`'s
-  `auth`); the gateway URL a harness is pointed at and the
+  `SignInMethod`s each offers, each a `SignInPlan`: its command, its
+  `Console` (pipes or a terminal), and its `SignInFlow` (paste a code back,
+  a device code approved on the page, an API key, or the `127.0.0.1`
+  address the browser could not open, checked as a `LocalRedirect`); its
+  status read as a `Standing`, its login read by `LoginReader`, the `https`
+  `SignInLink` it prints, a device login's `DeviceCode`, and the
+  `SignInAnswer` handed back, a secret never shown; each client's in its
+  module's `auth`); the gateway URL a harness is pointed at and the
   `UserToken` it presents there (`endpoint`); and `HostEnv` (`host`), the
   host environment that launching and configuration read. It performs
   filesystem and process I/O but has no async runtime, HTTP, database, or
@@ -338,12 +340,15 @@ dependencies under "Crates" below. Read the code for current module ownership.
   streamed pieces; a reply cut off kept as far as it came), and drains every
   run when the last handle is dropped. A client's sign-in on the host is
   read and run through the client's own commands: `sign_in` holds the pure
-  `SignInState` and the `Login` machine (starting, awaiting its code or its
-  approval, finishing, ended), and `login` its shell (`StatusCheck`, `LoginTalk`, and
+  `SignInState` and the `Login` machine (starting, awaiting its code, its
+  approval, its key, or its redirect, finishing, ended), and `login` its shell (`StatusCheck`, `LoginTalk`, and
   `SignIns`, one login per client, checked after each login and after a
   failed turn), behind `Supervisor::check_sign_in`, `sign_in`,
-  `sign_in_code`, `wait_sign_in`, and `cancel_sign_in`; a login is started with
-  `AgentHost::spawn_with_stderr`, so its failure reason is read.
+  `answer_sign_in`, `wait_sign_in`, and `cancel_sign_in`; a login is started
+  with `AgentHost::spawn_with_stderr`, so its failure reason is read, or
+  `AgentHost::spawn_in_terminal` when it needs a terminal, and a pasted
+  address is opened with `AgentHost::open_local`. What a login prints is
+  cleaned of every answer typed into it.
   `src/purity.rs` keeps `run`, `workdir`, `project`, `entries`, `files`,
   `session`, and `sign_in` free of runtime and I/O. The daemon constructs it when `[runs]`
   roots are configured, with `ProcessHost`; the gateway's control API serves it.
@@ -406,8 +411,10 @@ dependencies under "Crates" below. Read the code for current module ownership.
   coordinates HTTP shutdown before capture drain. It defines no
   HTTP routes or handlers and has no production Axum dependency. `config` turns
   `Config` into a `RuntimeConfig`. `host` holds `SystemClock`, `RandomIds`,
-  `ObservationThread`, `ProcessHost`, the supervisor's `AgentHost`, and
-  `HostTools`, the depot's `ToolHost`. `tools` is the tool store on disk
+  `ObservationThread`, `ProcessHost`, the supervisor's `AgentHost` (its
+  logins on a pseudo-terminal through `pty-process`, echo off, and a pasted
+  loopback address opened with one `GET`), and `HostTools`, the depot's
+  `ToolHost`. `tools` is the tool store on disk
   (`ToolStore`, under `<data>/tools`): it carries out the depot's
   `InstallJob`s (downloading through its `Fetch` seam, `ReqwestFetch` in
   production, https only and capped in bytes; unpacking tar.gz, zip, and

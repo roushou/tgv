@@ -44,19 +44,30 @@
     onclose: (outcome: LoginOutcome | null) => void;
   } = $props();
 
+  /** What the login waits for, typed into this sheet. */
+  type Asked =
+    | { what: 'code'; link: string }
+    | { what: 'key' }
+    /** The address the browser could not open after approving at `link`. */
+    | { what: 'redirect'; link: string };
   /** Where the sheet stands. */
   type Step =
     | { kind: 'choosing' }
     | { kind: 'starting' }
-    | { kind: 'awaiting'; link: string; said: string | null }
-    | { kind: 'sending'; link: string }
+    /** Asked for an answer: being typed, or on its way; `problem` says why
+     * the last one was not taken. */
+    | { kind: 'asking'; asked: Asked; phase: 'typing' | 'sending'; problem: string | null }
     /** A device login: the operator enters `code` at `link` and approves. */
     | { kind: 'approving'; link: string; code: string | null }
     | { kind: 'done'; outcome: LoginOutcome }
     | { kind: 'failed'; message: string };
 
   const known = (method: Stored<SignInMethod>): method is SignInMethod =>
-    method === 'claude_subscription' || method === 'anthropic_console' || method === 'chatgpt';
+    method === 'claude_subscription' ||
+    method === 'anthropic_console' ||
+    method === 'chatgpt' ||
+    method === 'anthropic_api_key' ||
+    method === 'openai_api_key';
   const offered = $derived(methods.filter(known));
   let method = $state<SignInMethod | null>(null);
   const chosen = $derived(method ?? offered[0] ?? null);
@@ -75,9 +86,15 @@
           return `${client} is not installed on the daemon’s host.`;
         case 'sign_in_not_offered':
           return `Ren cannot sign ${client} in yet.`;
-        case 'not_awaiting_code':
+        case 'not_awaiting_answer':
         case 'no_sign_in':
-          return 'This sign-in is no longer waiting for a code. Start again.';
+          return 'This sign-in is no longer waiting for that. Start again.';
+        case 'redirect_elsewhere':
+          return 'That is not the address this sign-in waits on. Copy it from the tab the link opened.';
+        case 'redirect_incomplete':
+          return 'That address has no code yet: approve on the page first, then copy the address it goes to.';
+        case 'redirect_not_an_address':
+          return 'Paste the whole address from the browser’s address bar, starting with http://127.0.0.1.';
         case 'spawn_failed':
           return `${client} could not be started on the daemon’s host.`;
         default:
@@ -93,10 +110,24 @@
     pasted = '';
     try {
       const login = await start(chosen);
+      const asking = (asked: Asked): Step => ({
+        kind: 'asking',
+        asked,
+        phase: 'typing',
+        problem: null,
+      });
       switch (login.kind) {
         case 'awaiting_code':
+          step = asking({ what: 'code', link: login.link });
+          break;
+        case 'awaiting_key':
+          step = asking({ what: 'key' });
+          break;
+        case 'awaiting_redirect':
+          step = asking({ what: 'redirect', link: login.link });
+          break;
         case 'finishing':
-          step = { kind: 'awaiting', link: login.link, said: login.said };
+          step = { kind: 'failed', message: `${client}’s sign-in is already finishing.` };
           break;
         case 'awaiting_approval':
           step = { kind: 'approving', link: login.link, code: login.code };
@@ -148,21 +179,24 @@
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
-    if (step.kind !== 'awaiting' || !pasted.trim()) return;
-    const link = step.link;
-    step = { kind: 'sending', link };
+    if (step.kind !== 'asking' || step.phase === 'sending' || !pasted.trim()) return;
+    const asked = step.asked;
+    step = { kind: 'asking', asked, phase: 'sending', problem: null };
     try {
       step = { kind: 'done', outcome: await sendCode(pasted) };
     } catch (error) {
-      step = { kind: 'failed', message: reason(error) };
+      // A wrong address can be pasted again; anything else ends the sign-in.
+      const again = error instanceof RunCommandError && (error.code ?? '').startsWith('redirect_');
+      step = again
+        ? { kind: 'asking', asked, phase: 'typing', problem: reason(error) }
+        : { kind: 'failed', message: reason(error) };
     } finally {
       pasted = '';
     }
   }
 
   async function close() {
-    const running =
-      step.kind === 'awaiting' || step.kind === 'starting' || step.kind === 'approving';
+    const running = step.kind === 'asking' || step.kind === 'starting' || step.kind === 'approving';
     following += 1;
     const outcome = step.kind === 'done' ? step.outcome : null;
     dialog?.close();
@@ -187,8 +221,8 @@
     <div>
       <h2 id="sign-in-title">{client}’s sign-in</h2>
       <p class="muted">
-        Ren runs {client}’s own login on the daemon’s host and passes its link and code through.
-        {client} keeps and refreshes the sign-in; Ren never sees it.
+        Ren runs {client}’s own login on the daemon’s host and passes what it asks for through.
+        {client} keeps and refreshes the sign-in; Ren never stores it.
       </p>
     </div>
     <button class="icon-button" aria-label="Close" onclick={() => void close()}
@@ -228,40 +262,70 @@
     <footer>
       <button class="button" onclick={() => void close()}>Cancel</button>
     </footer>
-  {:else if step.kind === 'awaiting' || step.kind === 'sending'}
+  {:else if step.kind === 'asking'}
+    {@const asked = step.asked}
+    {@const sending = step.phase === 'sending'}
     <ol class="steps">
-      <li>
-        <span class="step-title">Open the link {client} printed, and approve it there</span>
-        <span class="link">
-          <a class="mono" href={step.link} target="_blank" rel="noopener noreferrer">{step.link}</a>
-          <CopyButton text={step.link} label="Copy the link" />
-          <a class="button small" href={step.link} target="_blank" rel="noopener noreferrer"
-            >Open ↗</a
+      {#if asked.what !== 'key'}
+        <li>
+          <span class="step-title"
+            >{asked.what === 'code'
+              ? `Open the link ${client} printed, and approve it there`
+              : `Open the link ${client} printed, and approve with your ChatGPT account`}</span
           >
-        </span>
-      </li>
-      <li>
-        <form onsubmit={submit}>
-          <label class="step-title" for="sign-in-code">Paste the code the page shows</label>
-          <span class="code">
-            <input
-              id="sign-in-code"
-              class="mono"
-              type="text"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="Code"
-              disabled={step.kind === 'sending'}
-              bind:value={pasted}
-            />
-            <button class="button primary" disabled={step.kind === 'sending' || !pasted.trim()}
-              >{step.kind === 'sending'
-                ? 'Waiting for ' + client + '…'
-                : 'Send to ' + client}</button
+          <span class="link">
+            <a class="mono" href={asked.link} target="_blank" rel="noopener noreferrer"
+              >{asked.link}</a
+            >
+            <CopyButton text={asked.link} label="Copy the link" />
+            <a class="button small" href={asked.link} target="_blank" rel="noopener noreferrer"
+              >Open ↗</a
             >
           </span>
+        </li>
+      {/if}
+      <li>
+        <form onsubmit={submit}>
+          <label class="step-title" for="sign-in-answer"
+            >{asked.what === 'code'
+              ? 'Paste the code the page shows'
+              : asked.what === 'key'
+                ? `Paste your ${chosen ? SignIns.method(chosen) : 'API key'}`
+                : 'Paste the address your browser could not open'}</label
+          >
+          {#if asked.what === 'redirect'}
+            <span class="muted small-note"
+              >After you approve, the page sends your browser to an address starting with
+              <code>http://127.0.0.1</code>, which won’t load there. That’s expected: copy it from
+              the address bar.</span
+            >
+          {/if}
+          <span class="code">
+            <input
+              id="sign-in-answer"
+              class="mono"
+              type={asked.what === 'key' ? 'password' : 'text'}
+              autocomplete="off"
+              spellcheck="false"
+              placeholder={asked.what === 'code'
+                ? 'Code'
+                : asked.what === 'key'
+                  ? 'API key'
+                  : 'http://127.0.0.1:…/auth/callback?code=…'}
+              disabled={sending}
+              bind:value={pasted}
+            />
+            <button class="button primary" disabled={sending || !pasted.trim()}
+              >{sending ? 'Waiting for ' + client + '…' : 'Send to ' + client}</button
+            >
+          </span>
+          {#if step.problem}<span class="problem" role="alert">{step.problem}</span>{/if}
           <span class="muted small-note"
-            >It goes only to {client}’s login. Ren doesn’t keep or record it.</span
+            >{asked.what === 'redirect'
+              ? `Ren opens it on the daemon’s host for ${client}’s login, only when it is the address this sign-in waits on.`
+              : asked.what === 'key'
+                ? `It goes only to ${client}’s own login, which saves it on the daemon’s host. Ren doesn’t keep, log, or record it.`
+                : `It goes only to ${client}’s login. Ren doesn’t keep or record it.`}</span
           >
         </form>
       </li>
@@ -461,6 +525,10 @@
     .spinner {
       animation: none;
     }
+  }
+  .problem {
+    color: var(--error);
+    font-size: 12px;
   }
   .small-note {
     font-size: 12px;

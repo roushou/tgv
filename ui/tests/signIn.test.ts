@@ -170,3 +170,37 @@ test('a device login carries its one-time code, and a wait is going or done', as
   const done = await client.waitSignIn('codex');
   assert.equal(done.kind === 'done' && done.outcome.state.kind, 'signed_in');
 });
+
+test('a key login asks at once, a redirect login waits on an address, and a broken one says why', () => {
+  assert.deepEqual(login({ kind: 'awaiting_key', said: null }, ''), {
+    kind: 'awaiting_key',
+    said: null,
+  });
+  assert.equal(
+    login(
+      { kind: 'awaiting_redirect', link: 'https://auth.example.test/authorize', said: null },
+      '',
+    ).kind,
+    'awaiting_redirect',
+  );
+  assert.deepEqual(login({ kind: 'finishing', link: null, said: null }, ''), {
+    kind: 'finishing',
+    link: null,
+    said: null,
+  });
+  assert.equal(SignIns.method('anthropic_api_key'), 'Anthropic API key');
+  assert.equal(SignIns.method('openai_api_key'), 'OpenAI API key');
+  assert.deepEqual(
+    SignIns.outcome(
+      {
+        end: { end: 'broken', said: 'the address could not be opened on the host' },
+        state: { kind: 'signed_out' },
+      },
+      'OpenCode',
+    ),
+    {
+      ok: false,
+      text: 'the address could not be opened on the host. OpenCode is still signed out.',
+    },
+  );
+});

@@ -109,7 +109,7 @@ mod tests {
                 .join(" ")
         };
         assert_eq!(
-            words(Harness::ClaudeCode.sign_in_status().unwrap()),
+            words(Harness::ClaudeCode.sign_in_status().remove(0)),
             "auth status --json"
         );
         assert_eq!(
@@ -117,6 +117,7 @@ mod tests {
                 Harness::ClaudeCode
                     .sign_in(SignInMethod::ClaudeSubscription)
                     .unwrap()
+                    .launch
             ),
             "auth login --claudeai"
         );
@@ -125,6 +126,7 @@ mod tests {
                 Harness::ClaudeCode
                     .sign_in(SignInMethod::AnthropicConsole)
                     .unwrap()
+                    .launch
             ),
             "auth login --console"
         );

@@ -49,3 +49,7 @@ tower = { version = "0.5.3", default-features = false, features = ["util"] }
 
 [lints]
 workspace = true
+
+[target."cfg(unix)".dependencies]
+pty-process = { version = "0.5.4", features = ["async"] }
+rustix = { version = "1.1.6", features = ["termios"] }

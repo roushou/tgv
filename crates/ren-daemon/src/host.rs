@@ -9,7 +9,7 @@
 use crate::tools::ToolStore;
 use ren_depot::toolset::Generation;
 use ren_depot::{ToolHost, package::ProgramName, source::Platform, version::ProbeFailure};
-use ren_harness::{launch::LaunchPlan, pi::PiCache};
+use ren_harness::{launch::LaunchPlan, pi::PiCache, sign_in::LocalRedirect};
 use ren_recorder::{
     id::IdSource,
     time::{Clock, Moment, Monotonic, UnixMillis},
@@ -298,6 +298,22 @@ impl ProcessHost {
                 None => return Err(io::Error::other("the agent's stderr was not opened")),
             },
         };
+        let (exit, kill) = Self::exiting(child);
+        Ok(AgentProcess {
+            stdin: Box::new(stdin),
+            stdout,
+            exit,
+            kill,
+        })
+    }
+
+    /// `child`'s exit, and the switch that kills it first.
+    fn exiting(
+        mut child: tokio::process::Child,
+    ) -> (
+        futures_util::future::BoxFuture<'static, ProcessExit>,
+        KillSwitch,
+    ) {
         let (kill, signal) = KillSwitch::pair();
         let exit = async move {
             let status = tokio::select! {
@@ -312,10 +328,48 @@ impl ProcessHost {
                 Err(_) => ProcessExit::Unknown,
             }
         };
+        (Box::pin(exit), kill)
+    }
+
+    /// The size of a login's terminal: wide, so a long link stays on one line.
+    #[cfg(unix)]
+    const TERMINAL: (u16, u16) = (50, 400);
+
+    /// `command` started in `workdir` on a pseudo-terminal of its own, as
+    /// its session leader with that terminal as its controlling terminal,
+    /// echo off.
+    #[cfg(unix)]
+    fn start_in_terminal(
+        command: &std::process::Command,
+        workdir: &Path,
+    ) -> io::Result<AgentProcess> {
+        let (pty, pts) = pty_process::open().map_err(io::Error::other)?;
+        let (rows, columns) = Self::TERMINAL;
+        pty.resize(pty_process::Size::new(rows, columns))
+            .map_err(io::Error::other)?;
+        let mut terminal = pty_process::Command::new(command.get_program())
+            .args(command.get_args())
+            .current_dir(workdir)
+            .kill_on_drop(true)
+            .env("TERM", "xterm-256color");
+        for (name, value) in command.get_envs() {
+            terminal = match value {
+                Some(value) => terminal.env(name, value),
+                None => terminal.env_remove(name),
+            };
+        }
+        // Echo off from the start: what Ren types (an API key) is never shown
+        // back by the terminal; a program that wants it shown shows it.
+        let mut modes = rustix::termios::tcgetattr(&pts)?;
+        modes.local_modes.remove(rustix::termios::LocalModes::ECHO);
+        rustix::termios::tcsetattr(&pts, rustix::termios::OptionalActions::Now, &modes)?;
+        let child = terminal.spawn(pts).map_err(io::Error::other)?;
+        let (read, write) = pty.into_split();
+        let (exit, kill) = Self::exiting(child);
         Ok(AgentProcess {
-            stdin: Box::new(stdin),
-            stdout,
-            exit: Box::pin(exit),
+            stdin: Box::new(write),
+            stdout: Box::new(read),
+            exit,
             kill,
         })
     }
@@ -510,6 +564,60 @@ impl AgentHost for ProcessHost {
             command.env("PATH", path);
         }
         Self::start(command, workdir.as_path(), Stderr::WithStdout)
+    }
+
+    fn spawn_in_terminal(
+        &self,
+        plan: &LaunchPlan,
+        workdir: &Workdir,
+        tools: &RunTools,
+    ) -> io::Result<AgentProcess> {
+        if plan.loads_pi_extension() {
+            return Err(io::Error::other(
+                "a client's own short commands load no extension",
+            ));
+        }
+        let mut command = plan.command(None, &[]);
+        if let Some(path) = self.search_path_with(tools)? {
+            command.env("PATH", path);
+        }
+        #[cfg(unix)]
+        {
+            Self::start_in_terminal(&command, workdir.as_path())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (command, workdir);
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+    }
+
+    fn open_local(
+        &self,
+        address: &LocalRedirect,
+    ) -> futures_util::future::BoxFuture<'static, io::Result<()>> {
+        let address = address.as_str().to_owned();
+        Box::pin(async move {
+            // Loopback only (the address was checked to be the one the
+            // login listens on): no proxy, no redirect followed.
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(io::Error::other)?;
+            let response = client
+                .get(&address)
+                .send()
+                .await
+                .map_err(io::Error::other)?;
+            let status = response.status();
+            if status.is_success() || status.is_redirection() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!("it answered {status}")))
+            }
+        })
     }
 }
 
@@ -806,6 +914,33 @@ mod tests {
         let sleeping = ProcessHost::start(sleeper, dir.path(), Stderr::Discarded).unwrap();
         sleeping.kill.fire();
         assert_eq!(sleeping.exit.await, ProcessExit::Signal(9));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_terminal_login_sees_a_terminal_and_takes_enter() {
+        use super::{ProcessExit, ProcessHost};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let mut login = std::process::Command::new("sh");
+        // Like `pi auth login --api-key`: a terminal, a prompt, no echo.
+        login.args([
+            "-c",
+            "[ -t 0 ] && echo terminal; stty -echo; printf 'Enter key: '; read key; echo; echo \"Saved ${#key} characters\"",
+        ]);
+        let mut process = ProcessHost::start_in_terminal(&login, dir.path()).unwrap();
+        process.stdin.write_all(b"sk-acme\r").await.unwrap();
+        let mut output = Vec::new();
+        let mut buffer = [0; 1024];
+        // A terminal reads as an error once its process has exited.
+        while let Ok(read @ 1..) = process.stdout.read(&mut buffer).await {
+            output.extend_from_slice(&buffer[..read]);
+        }
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("terminal"), "{output:?}");
+        assert!(output.contains("Saved 7 characters"), "{output:?}");
+        assert!(!output.contains("sk-acme"), "{output:?}");
+        assert_eq!(process.exit.await, ProcessExit::Code(0));
     }
 
     #[tokio::test(flavor = "current_thread")]
