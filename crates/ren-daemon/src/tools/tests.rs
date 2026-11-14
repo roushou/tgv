@@ -11,7 +11,7 @@ use ren_depot::{
     job::{Failure, HostFailure, JobState, Stage},
     package::{Kind, Package, PackageId},
     source::{ArchiveFormat, Artifact, ArtifactUrl, Platform, Release, Sha256, Source},
-    toolset::{Generation, Plan, Toolset},
+    toolset::{Edit, Generation, Plan, Toolset},
 };
 use sha2::Digest as _;
 use std::{
@@ -37,6 +37,20 @@ impl Fetch for FakeFetch {
         }
         std::fs::write(into, bytes).map_err(|_| HostFailure::Filesystem)
     }
+}
+
+/// Run a program just written, retrying while a process another test
+/// thread is starting still holds the file open ("text file busy").
+fn run(program: impl AsRef<Path>) -> std::process::Output {
+    for _ in 0..100 {
+        match std::process::Command::new(program.as_ref()).output() {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => return other.unwrap(),
+        }
+    }
+    panic!("{} stayed busy", program.as_ref().display());
 }
 
 fn sha256(bytes: &[u8]) -> Sha256 {
@@ -126,7 +140,7 @@ async fn installs_a_verified_release_and_activates_it_as_a_generation() {
     assert_eq!(one.generation().number(), 1);
     assert_eq!(store.current().unwrap(), one);
     let program = store.bin(one.generation()).join("jq");
-    let output = std::process::Command::new(&program).output().unwrap();
+    let output = run(&program);
     assert_eq!(String::from_utf8_lossy(&output.stdout), "jq-1.7.1\n");
     // The archive's own link came along.
     let installed = std::fs::canonicalize(&program).unwrap();
@@ -235,9 +249,7 @@ async fn installs_zip_and_bare_releases_and_names_a_missing_program() {
         };
         assert_eq!(ended[0].1, JobState::Installed, "{format}");
         let one = store.activate(plan).unwrap();
-        let output = std::process::Command::new(store.bin(one.generation()).join("jq"))
-            .output()
-            .unwrap();
+        let output = run(store.bin(one.generation()).join("jq"));
         assert_eq!(String::from_utf8_lossy(&output.stdout), said, "{format}");
     }
 }
@@ -280,9 +292,7 @@ async fn collection_keeps_what_live_generations_hold() {
     );
     assert!(!store.generation_dir(one.generation()).exists());
     assert!(dir.path().join("store/jq").is_dir());
-    let output = std::process::Command::new(store.bin(two.generation()).join("jq"))
-        .output()
-        .unwrap();
+    let output = run(store.bin(two.generation()).join("jq"));
     assert_eq!(String::from_utf8_lossy(&output.stdout), "jq-1.8.0\n");
 
     // Nothing to remove the second time.
@@ -305,4 +315,65 @@ async fn a_stale_plan_is_refused_at_activation() {
         Err(ToolStoreError::Plan(_))
     ));
     assert_eq!(store.current().unwrap().generation().number(), 1);
+}
+
+#[tokio::test]
+async fn a_change_installs_and_activates_under_the_store_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = tarball("1.7.1", |_| {});
+    let (url, source) = release("1.7.1", ArchiveFormat::TarGz, &bytes, "jq-1.7.1/bin/jq");
+    let store = ToolStore::new(dir.path(), FakeFetch([(url, bytes)].into()));
+    let depot = jq(source);
+    let wanted = Edit {
+        add: [PackageId::JQ].into(),
+        remove: BTreeSet::new(),
+    };
+
+    // Another writer holds the lock: refused, nothing changes.
+    let held = store.lock().unwrap();
+    assert!(matches!(
+        store.change(&depot, Platform::LinuxX64, &wanted).await,
+        Err(ToolStoreError::Busy)
+    ));
+    drop(held);
+
+    let changed = store
+        .change(&depot, Platform::LinuxX64, &wanted)
+        .await
+        .unwrap_or_else(|error| panic!("{error:?}"));
+    assert!(matches!(
+        &changed,
+        super::Changed::Activated { toolset, changes } if toolset.generation().number() == 1 && changes.len() == 1
+    ));
+    assert!(matches!(
+        store.change(&depot, Platform::LinuxX64, &wanted).await.unwrap(),
+        super::Changed::Unchanged(toolset) if toolset.generation().number() == 1
+    ));
+}
+
+#[tokio::test]
+async fn a_failed_install_leaves_the_current_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = tarball("1.7.1", |_| {});
+    let (_, source) = release("1.7.1", ArchiveFormat::TarGz, &bytes, "jq-1.7.1/bin/jq");
+    // The server refuses the download.
+    let store = ToolStore::new(dir.path(), FakeFetch::default());
+    let changed = store
+        .change(
+            &jq(source),
+            Platform::LinuxX64,
+            &Edit {
+                add: [PackageId::JQ].into(),
+                remove: BTreeSet::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        &changed,
+        super::Changed::Failed { current, jobs }
+            if current.generation() == Generation::NONE
+                && jobs[0].1 == JobState::Failed { stage: Stage::Fetch, failure: Failure::Host(HostFailure::Refused) }
+    ));
+    assert_eq!(store.current().unwrap().generation(), Generation::NONE);
 }

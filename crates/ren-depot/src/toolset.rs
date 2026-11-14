@@ -116,6 +116,15 @@ pub struct Link {
     pub target: RelativePath,
 }
 
+/// What the operator asks to change: packages to add (or bring to the
+/// catalog's release) and packages to remove, applied to whichever
+/// generation is current when the change is made.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Edit {
+    pub add: BTreeSet<PackageId>,
+    pub remove: BTreeSet<PackageId>,
+}
+
 /// One package's change between a toolset and the next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -146,6 +155,10 @@ pub enum PlanError {
         package: PackageId,
         platform: Platform,
     },
+    #[error("{0} is not installed by Ren")]
+    NotInstalled(PackageId),
+    #[error("{0} is both added and removed")]
+    Conflicting(PackageId),
     #[error("the plan was made from generation {planned}, but generation {current} is current")]
     Stale {
         planned: Generation,
@@ -195,6 +208,22 @@ impl Toolset {
                 target: install.program_path(),
             })
             .collect()
+    }
+
+    /// The packages this toolset holds after `edit`. Removing a package it
+    /// does not hold, or adding and removing one, is refused.
+    pub fn wanted_after(&self, edit: &Edit) -> Result<BTreeSet<PackageId>, PlanError> {
+        if let Some(both) = edit.add.intersection(&edit.remove).next() {
+            return Err(PlanError::Conflicting(both.clone()));
+        }
+        let mut wanted: BTreeSet<PackageId> = self.installs.keys().cloned().collect();
+        for package in &edit.remove {
+            if !wanted.remove(package) {
+                return Err(PlanError::NotInstalled(package.clone()));
+            }
+        }
+        wanted.extend(edit.add.iter().cloned());
+        Ok(wanted)
     }
 
     /// The changes that make this toolset hold exactly `wanted`, each at the
@@ -307,7 +336,7 @@ impl Plan {
 
 #[cfg(test)]
 mod tests {
-    use super::{Change, Generation, PlanError, Toolset};
+    use super::{Change, Edit, Generation, PlanError, Toolset};
     use crate::{
         Depot,
         package::{Kind, Package, PackageId},
@@ -414,6 +443,37 @@ mod tests {
         let two = second.apply(&one).unwrap();
         assert_eq!(two.generation().number(), 2);
         assert!(two.install(&PackageId::JQ).is_none());
+    }
+
+    #[test]
+    fn an_edit_adds_to_and_removes_from_what_is_held() {
+        let empty = Toolset::empty();
+        let depot = depot("22.17.1", 'a');
+        let one = empty
+            .plan(&depot, Platform::LinuxX64, &wanted(&[PackageId::NODE]))
+            .unwrap()
+            .apply(&empty)
+            .unwrap();
+        let edit = |add: &[PackageId], remove: &[PackageId]| Edit {
+            add: wanted(add),
+            remove: wanted(remove),
+        };
+        assert_eq!(
+            one.wanted_after(&edit(&[PackageId::JQ], &[])),
+            Ok(wanted(&[PackageId::NODE, PackageId::JQ]))
+        );
+        assert_eq!(
+            one.wanted_after(&edit(&[PackageId::JQ], &[PackageId::NODE])),
+            Ok(wanted(&[PackageId::JQ]))
+        );
+        assert_eq!(
+            one.wanted_after(&edit(&[], &[PackageId::JQ])),
+            Err(PlanError::NotInstalled(PackageId::JQ))
+        );
+        assert_eq!(
+            one.wanted_after(&edit(&[PackageId::JQ], &[PackageId::JQ])),
+            Err(PlanError::Conflicting(PackageId::JQ))
+        );
     }
 
     #[test]

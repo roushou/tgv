@@ -19,10 +19,11 @@ pub mod fetch;
 use archive::Download;
 use fetch::{ByteLimit, Fetch};
 use ren_depot::{
+    Depot,
     job::{HostFailure, InstallJob, JobAction, JobEvent, JobState},
     package::PackageId,
-    source::{Artifact, RelativePath, Sha256},
-    toolset::{Generation, Install, Plan, PlanError, Toolset},
+    source::{Artifact, Platform, RelativePath, Sha256},
+    toolset::{Change, Edit, Generation, Install, Plan, PlanError, Toolset},
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
@@ -49,6 +50,8 @@ pub enum ToolStoreError {
     Plan(#[from] PlanError),
     #[error("toolsets need symbolic links, which this platform lacks")]
     Unsupported,
+    #[error("another change to the tool store is in progress")]
+    Busy,
 }
 
 impl ToolStoreError {
@@ -63,6 +66,29 @@ struct StoredToolset {
     generation: Generation,
     installs: Vec<Install>,
 }
+
+/// How a change to the toolset ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum Changed {
+    /// The current generation already held what was wanted.
+    Unchanged(Toolset),
+    /// Every install succeeded, and the next generation is current.
+    Activated {
+        toolset: Toolset,
+        changes: Vec<Change>,
+    },
+    /// An install did not succeed; the current generation stays.
+    Failed {
+        current: Toolset,
+        jobs: Vec<(Install, JobState)>,
+    },
+}
+
+/// Held while a change or collection writes the store; the store's lock
+/// file is unlocked when it drops, or when the process ends.
+#[derive(Debug)]
+struct WriteLock(#[expect(dead_code, reason = "held for its lock")] fs::File);
 
 /// What a collection removed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -140,10 +166,43 @@ impl<F> ToolStore<F> {
         Ok(Toolset::restore(stored.generation, stored.installs))
     }
 
+    const LOCK_TRIES: u32 = 100;
+    const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(10);
+
+    /// The store's write lock, or `Busy` when another writer holds it.
+    fn lock(&self) -> Result<WriteLock, ToolStoreError> {
+        fs::create_dir_all(&self.root).map_err(ToolStoreError::io("make the tool store"))?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(".lock"))
+            .map_err(ToolStoreError::io("open the tool store's lock"))?;
+        // A process started at the same moment can hold a copy of a just
+        // closed lock until it runs its program, so a held lock is tried
+        // again for a second before it counts as another writer's.
+        for _ in 0..Self::LOCK_TRIES {
+            match file.try_lock() {
+                Ok(()) => return Ok(WriteLock(file)),
+                Err(fs::TryLockError::WouldBlock) => std::thread::sleep(Self::LOCK_WAIT),
+                Err(fs::TryLockError::Error(error)) => {
+                    return Err(ToolStoreError::io("lock the tool store")(error));
+                }
+            }
+        }
+        Err(ToolStoreError::Busy)
+    }
+
     /// Make `plan`'s toolset the current generation. Every install it adds
     /// must be in the store; a plan made from an older generation is
     /// refused.
-    pub fn activate(&self, plan: Plan) -> Result<Toolset, ToolStoreError> {
+    #[cfg(test)]
+    pub(crate) fn activate(&self, plan: Plan) -> Result<Toolset, ToolStoreError> {
+        let _lock = self.lock()?;
+        self.activate_locked(plan)
+    }
+
+    fn activate_locked(&self, plan: Plan) -> Result<Toolset, ToolStoreError> {
         if let Some((missing, _)) = plan
             .fetches()
             .iter()
@@ -196,6 +255,7 @@ impl<F> ToolStore<F> {
     /// Remove every generation except the current one and those in `live`
     /// (generations runs still use), and every install none of them holds.
     pub fn collect(&self, live: &[Generation]) -> Result<Collected, ToolStoreError> {
+        let _lock = self.lock()?;
         let current = self.current()?;
         let mut kept = vec![current.clone()];
         for generation in live {
@@ -269,9 +329,35 @@ impl<F: Fetch> ToolStore<F> {
         }
     }
 
+    /// Apply `edit` to the current generation: plan, install what the plan
+    /// adds, and activate the next generation only if every install
+    /// succeeded. The store is locked throughout, so the edit applies to
+    /// the generation that is current then.
+    pub async fn change(
+        &self,
+        depot: &Depot,
+        platform: Platform,
+        edit: &Edit,
+    ) -> Result<Changed, ToolStoreError> {
+        let _lock = self.lock()?;
+        let current = self.current()?;
+        let wanted = current.wanted_after(edit)?;
+        let plan = current.plan(depot, platform, &wanted)?;
+        if plan.is_empty() {
+            return Ok(Changed::Unchanged(current));
+        }
+        let jobs = self.install_plan(&plan).await;
+        if jobs.iter().any(|(_, state)| *state != JobState::Installed) {
+            return Ok(Changed::Failed { current, jobs });
+        }
+        let changes = plan.changes().to_vec();
+        let toolset = self.activate_locked(plan)?;
+        Ok(Changed::Activated { toolset, changes })
+    }
+
     /// Install every release `plan` adds that the store lacks, one at a
     /// time, and say how each ended.
-    pub async fn install_plan(&self, plan: &Plan) -> Vec<(Install, JobState)> {
+    pub(crate) async fn install_plan(&self, plan: &Plan) -> Vec<(Install, JobState)> {
         let mut ended = Vec::new();
         for (install, artifact) in plan.fetches() {
             let state = self.install(install, artifact).await;
@@ -281,7 +367,7 @@ impl<F: Fetch> ToolStore<F> {
     }
 
     /// Install `install` from `artifact`, unless the store has it.
-    pub async fn install(&self, install: &Install, artifact: &Artifact) -> JobState {
+    async fn install(&self, install: &Install, artifact: &Artifact) -> JobState {
         if self.has(install) {
             return JobState::Installed;
         }

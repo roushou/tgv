@@ -6,7 +6,7 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Args, Subcommand};
 use ren_daemon::{
     host::HostTools,
-    tools::{ToolStore, fetch::ReqwestFetch},
+    tools::{Changed, ToolStore, fetch::ReqwestFetch},
 };
 use ren_depot::{
     Depot, Surveyed,
@@ -14,7 +14,7 @@ use ren_depot::{
     package::PackageId,
     provision::Provision,
     source::Source,
-    toolset::{Change, Toolset},
+    toolset::{Change, Edit, Toolset},
     version::ObservedVersion,
 };
 use ren_store::{Reader, Store};
@@ -95,24 +95,18 @@ impl ToolsCmd {
                 Ok(ExitCode::SUCCESS)
             }
             ToolsAction::Install(args) => {
-                let mut wanted: BTreeSet<PackageId> = current
-                    .installs()
-                    .map(|install| install.package.clone())
-                    .collect();
-                wanted.extend(args.packages);
-                Self::change(&store, &depot, &current, &wanted).await
+                let edit = Edit {
+                    add: args.packages.into_iter().collect(),
+                    remove: BTreeSet::new(),
+                };
+                Self::change(&store, &depot, &edit).await
             }
             ToolsAction::Remove(args) => {
-                let mut wanted: BTreeSet<PackageId> = current
-                    .installs()
-                    .map(|install| install.package.clone())
-                    .collect();
-                for package in &args.packages {
-                    if !wanted.remove(package) {
-                        bail!("{package} is not installed by Ren");
-                    }
-                }
-                Self::change(&store, &depot, &current, &wanted).await
+                let edit = Edit {
+                    add: BTreeSet::new(),
+                    remove: args.packages.into_iter().collect(),
+                };
+                Self::change(&store, &depot, &edit).await
             }
             ToolsAction::Gc => {
                 // Generations runs still use stay. Without a database, no
@@ -144,62 +138,63 @@ impl ToolsCmd {
         }
     }
 
-    /// Install what `wanted` adds and make it the next generation; nothing
-    /// changes unless every install succeeds.
+    /// Apply `edit`: install what it adds and make the next generation
+    /// current; nothing changes unless every install succeeds.
     async fn change(
         store: &ToolStore<ReqwestFetch>,
         depot: &Depot,
-        current: &Toolset,
-        wanted: &BTreeSet<PackageId>,
+        edit: &Edit,
     ) -> Result<ExitCode> {
         let platform = HostTools::platform()
             .context("Ren installs tools only on Linux x64, Linux arm64, and macOS arm64")?;
-        let plan = current.plan(depot, platform, wanted)?;
-        if plan.is_empty() {
-            println!("nothing to change (generation {})", current.generation());
-            return Ok(ExitCode::SUCCESS);
-        }
-        let mut failed = false;
-        for (install, state) in store.install_plan(&plan).await {
-            let name = format!("{} {}", install.package, install.version);
-            match state {
-                JobState::Installed => println!("installed {name}"),
-                JobState::Failed { stage, failure } => {
-                    failed = true;
-                    eprintln!("{name}: {stage} failed: {}", Self::describe(failure));
+        match store.change(depot, platform, edit).await? {
+            Changed::Unchanged(current) => {
+                println!("nothing to change (generation {})", current.generation());
+                Ok(ExitCode::SUCCESS)
+            }
+            Changed::Failed { current, jobs } => {
+                for (install, state) in jobs {
+                    let name = format!("{} {}", install.package, install.version);
+                    match state {
+                        JobState::Installed => println!("installed {name}"),
+                        JobState::Failed { stage, failure } => {
+                            eprintln!("{name}: {stage} failed: {}", Self::describe(failure));
+                        }
+                        JobState::Interrupted { stage } => {
+                            eprintln!("{name}: interrupted during {stage}");
+                        }
+                        JobState::Fetching | JobState::Unpacking | JobState::Placing => {
+                            eprintln!("{name}: the install stopped unfinished");
+                        }
+                    }
                 }
-                JobState::Interrupted { stage } => {
-                    failed = true;
-                    eprintln!("{name}: interrupted during {stage}");
+                bail!(
+                    "nothing changed; generation {} is still current",
+                    current.generation()
+                )
+            }
+            Changed::Activated { toolset, changes } => {
+                for change in changes {
+                    match change {
+                        Change::Add(install) => {
+                            println!("+ {} {}", install.package, install.version);
+                        }
+                        Change::Replace { from, to } => {
+                            println!("~ {} {} -> {}", to.package, from.version, to.version);
+                        }
+                        Change::Remove(install) => {
+                            println!("- {} {}", install.package, install.version);
+                        }
+                    }
                 }
-                JobState::Fetching | JobState::Unpacking | JobState::Placing => {
-                    failed = true;
-                    eprintln!("{name}: the install stopped unfinished");
-                }
+                println!(
+                    "generation {} is current: {}",
+                    toolset.generation(),
+                    store.bin(toolset.generation()).display()
+                );
+                Ok(ExitCode::SUCCESS)
             }
         }
-        if failed {
-            bail!(
-                "nothing changed; generation {} is still current",
-                current.generation()
-            );
-        }
-        for change in plan.changes() {
-            match change {
-                Change::Add(install) => println!("+ {} {}", install.package, install.version),
-                Change::Replace { from, to } => {
-                    println!("~ {} {} -> {}", to.package, from.version, to.version);
-                }
-                Change::Remove(install) => println!("- {} {}", install.package, install.version),
-            }
-        }
-        let next = store.activate(plan)?;
-        println!(
-            "generation {} is current: {}",
-            next.generation(),
-            store.bin(next.generation()).display()
-        );
-        Ok(ExitCode::SUCCESS)
     }
 
     fn describe(failure: Failure) -> String {

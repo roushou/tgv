@@ -265,11 +265,22 @@ impl ProcessHost {
             .stderr(Stdio::null());
         let mut command = tokio::process::Command::from(command);
         command.kill_on_drop(true);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the one sanctioned place that starts agent processes"
-        )]
-        let mut child = command.spawn()?;
+        // A program installed a moment ago can still be open in a process
+        // that is being started ("text file busy"): try again briefly.
+        let mut tries = 0;
+        let mut child = loop {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the one sanctioned place that starts agent processes"
+            )]
+            match command.spawn() {
+                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => break other?,
+            }
+        };
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(io::Error::other("the agent's pipes were not opened"));
         };
