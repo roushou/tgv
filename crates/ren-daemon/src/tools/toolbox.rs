@@ -85,6 +85,23 @@ impl<F: Fetch + 'static> HostToolbox<F> {
         Ok(Inner::<F>::change_view(changed))
     }
 
+    pub async fn go_back(&self, generation: Generation) -> Result<ToolChange, ToolboxError> {
+        let inner = self.inner.clone();
+        let changed = tokio::task::spawn_blocking(move || inner.store.roll_back(generation))
+            .await
+            .map_err(|error| ToolboxError::Failed(error.to_string()))?
+            .map_err(|error| match error {
+                ToolStoreError::NotInstalled(_) => ToolboxError::Collected(generation),
+                other @ (ToolStoreError::Io { .. }
+                | ToolStoreError::Corrupt(_)
+                | ToolStoreError::Plan(_)
+                | ToolStoreError::Unsupported
+                | ToolStoreError::Busy
+                | ToolStoreError::NoGeneration(_)) => Inner::<F>::failed(other),
+            })?;
+        Ok(Inner::<F>::change_view(changed))
+    }
+
     pub async fn sweep(&self) -> Result<ToolCollection, ToolboxError> {
         let live = self.live().await?;
         let collected = self
@@ -115,6 +132,7 @@ impl<F> Inner<F> {
             ToolStoreError::Busy => ToolboxError::Busy,
             ToolStoreError::Plan(error) => ToolboxError::Refused(error),
             ToolStoreError::Unsupported => ToolboxError::Unsupported,
+            ToolStoreError::NoGeneration(generation) => ToolboxError::NoGeneration(generation),
             error @ (ToolStoreError::Io { .. }
             | ToolStoreError::Corrupt(_)
             | ToolStoreError::NotInstalled(_)) => ToolboxError::Failed(error.to_string()),
@@ -129,6 +147,7 @@ impl<F> Inner<F> {
             .map(|Surveyed { package, provision }| ToolPackage {
                 id: package.id().clone(),
                 kind: package.kind(),
+                program: package.program().clone(),
                 release: match package.source() {
                     Source::System => None,
                     Source::Release(release) => Some(release.version.clone()),
@@ -180,6 +199,8 @@ impl<F> Inner<F> {
         Ok(ToolListing {
             platform: self.platform,
             generation: current.generation(),
+            bin: (current.generation() != Generation::NONE)
+                .then(|| self.store.bin(current.generation()).display().to_string()),
             packages,
             generations,
         })
@@ -294,6 +315,14 @@ impl<F: Fetch + 'static> Toolbox for HostToolbox<F> {
     fn change(&self, edit: Edit) -> BoxFuture<'static, Result<ToolChange, ToolboxError>> {
         let toolbox = self.clone();
         async move { toolbox.apply(edit).await }.boxed()
+    }
+
+    fn roll_back(
+        &self,
+        generation: Generation,
+    ) -> BoxFuture<'static, Result<ToolChange, ToolboxError>> {
+        let toolbox = self.clone();
+        async move { toolbox.go_back(generation).await }.boxed()
     }
 
     fn collect(&self) -> BoxFuture<'static, Result<ToolCollection, ToolboxError>> {

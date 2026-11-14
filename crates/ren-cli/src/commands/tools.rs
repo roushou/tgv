@@ -10,8 +10,12 @@ use ren_daemon::{
     host::HostTools,
     tools::{HostToolbox, ToolStore, fetch::ReqwestFetch},
 };
-use ren_depot::{Depot, package::PackageId, toolset::Edit};
-use ren_gateway::tools::{ChangeKind, ChangeOutcome, ToolListing};
+use ren_depot::{
+    Depot,
+    package::PackageId,
+    toolset::{Edit, Generation},
+};
+use ren_gateway::tools::{ChangeKind, ChangeOutcome, ToolChange, ToolListing};
 use ren_store::{Reader, Store};
 use std::{collections::BTreeSet, process::ExitCode};
 
@@ -31,9 +35,26 @@ enum ToolsAction {
     Install(Packages),
     /// Leave packages out of a new generation. Their files stay until `gc`.
     Remove(Packages),
+    /// Make the next generation hold what a kept generation held, from
+    /// installs still in the store.
+    Rollback(RollbackArgs),
+    /// Where the program a package provides is, as a new run finds it.
+    Which(WhichArgs),
     /// Delete every generation but the current one and those runs still
     /// use, and every install none of them holds.
     Gc,
+}
+
+#[derive(Args)]
+struct RollbackArgs {
+    /// The generation to go back to, as `ren tools list --json` lists them.
+    generation: Generation,
+}
+
+#[derive(Args)]
+struct WhichArgs {
+    /// A package name, as `ren tools list` shows it.
+    package: PackageId,
 }
 
 #[derive(Args)]
@@ -101,6 +122,24 @@ impl ToolsCmd {
                 )
                 .await
             }
+            ToolsAction::Rollback(args) => Self::report(toolbox.go_back(args.generation).await?),
+            ToolsAction::Which(args) => {
+                let listing = toolbox.read_listing().await?;
+                let Some(package) = listing.packages.iter().find(|p| p.id == args.package) else {
+                    bail!("no package is named {}", args.package);
+                };
+                let installed = listing
+                    .bin
+                    .as_ref()
+                    .filter(|_| package.installed.is_some())
+                    .map(|bin| std::path::Path::new(bin).join(package.program.as_str()));
+                match (installed, &package.system) {
+                    (Some(path), _) => println!("{}", path.display()),
+                    (None, Some(system)) => println!("{}", system.path),
+                    (None, None) => bail!("{} is neither installed by Ren nor on PATH", package.id),
+                }
+                Ok(ExitCode::SUCCESS)
+            }
             ToolsAction::Gc => {
                 let collected = toolbox.sweep().await?;
                 for generation in &collected.generations {
@@ -120,7 +159,11 @@ impl ToolsCmd {
     /// Apply `edit`: install what it adds and make the next generation
     /// current; nothing changes unless every install succeeds.
     async fn change(toolbox: &HostToolbox<ReqwestFetch>, edit: Edit) -> Result<ExitCode> {
-        let changed = toolbox.apply(edit).await?;
+        Self::report(toolbox.apply(edit).await?)
+    }
+
+    /// Print how a change ended.
+    fn report(changed: ToolChange) -> Result<ExitCode> {
         match changed.outcome {
             ChangeOutcome::Unchanged => {
                 println!("nothing to change (generation {})", changed.generation);

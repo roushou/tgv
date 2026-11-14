@@ -58,6 +58,8 @@ export interface SystemTool {
 export interface ToolPackage {
   id: PackageId;
   kind: Stored<Kind>;
+  /** The program it provides (`rg` for `ripgrep`). */
+  program: string;
   /** The release Ren installs; `null` for a package it only finds on PATH. */
   release: Version | null;
   installed: InstalledTool | null;
@@ -80,6 +82,8 @@ export interface ToolListing {
   /** Where Ren installs tools; `null` on a platform it installs nothing for. */
   platform: Stored<Platform> | null;
   generation: Generation;
+  /** The current generation's folder of programs; `null` before any. */
+  bin: string | null;
   packages: ToolPackage[];
   generations: GenerationView[];
 }
@@ -118,10 +122,12 @@ const listing: Decoder<ToolListing> = versioned(
   object<ToolListing>({
     platform: nullable(label(platforms)),
     generation,
+    bin: nullable(string),
     packages: array(
       object<ToolPackage>({
         id: packageId,
         kind: label(KINDS),
+        program: string,
         release: nullable(version),
         installed: nullable(object<InstalledTool>({ version, sha256: string, dir: string })),
         system: nullable(
@@ -372,6 +378,9 @@ export class ToolsError extends Error {
     switch (code) {
       case 'tools_refused':
         return message === null ? 'The daemon refused the change.' : `${message}.`;
+      case 'tools_no_generation':
+      case 'tools_collected':
+        return message === null ? 'That generation cannot be restored.' : `${message}.`;
       case 'tools_busy':
         return 'Another change to the tools is in progress. Try again when it ends.';
       case 'tools_unsupported':
@@ -408,6 +417,11 @@ export class ToolsApi {
 
   change(plan: ToolPlan): Promise<ToolChange> {
     return this.#request('POST', '/control/tools/change', plan.body(), change);
+  }
+
+  /** Make the next generation hold what a kept `generation` held. */
+  rollBack(generation: Generation): Promise<ToolChange> {
+    return this.#request('POST', '/control/tools/rollback', { generation }, change);
   }
 
   collect(): Promise<ToolCollection> {

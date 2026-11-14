@@ -9,6 +9,7 @@
     ToolPlan,
     ToolsApi,
     ToolsError,
+    type Generation,
     type PackageId,
     type ToolChange,
     type ToolListing,
@@ -70,6 +71,19 @@
       const change = await api.change(plan);
       applying = { kind: 'done', change };
       if (change.outcome !== 'failed') plan = ToolPlan.EMPTY;
+    } catch (error) {
+      applying = { kind: 'failed', message: message(error) };
+    }
+    await load();
+  }
+
+  /** Make the next generation hold what `generation` held. */
+  async function rollBack(generation: Generation) {
+    if (applying.kind === 'applying') return;
+    applying = { kind: 'applying' };
+    try {
+      applying = { kind: 'done', change: await api.rollBack(generation) };
+      plan = ToolPlan.EMPTY;
     } catch (error) {
       applying = { kind: 'failed', message: message(error) };
     }
@@ -330,6 +344,16 @@
                   >{generation.installs.map((i) => `${i.package} ${i.version}`).join(', ') ||
                     'empty'}</span
                 >
+                <span class="end">
+                  {#if generation.state !== 'current' && !unsupported}
+                    <button
+                      class="button small"
+                      title="Make a new generation that holds what generation {generation.generation} held"
+                      disabled={applying.kind === 'applying'}
+                      onclick={() => rollBack(generation.generation)}>Restore</button
+                    >
+                  {/if}
+                </span>
               </li>
             {/each}
           </ul>
@@ -535,9 +559,11 @@
   }
   .generations li {
     display: grid;
-    grid-template-columns: 28px 88px minmax(0, 1fr);
+    grid-template-columns: 28px 88px minmax(0, 1fr) auto;
+    align-items: center;
     gap: 6px;
-    padding: 5px 0;
+    padding: 4px 0;
+    min-height: 33px;
     border-bottom: 1px solid var(--line);
   }
   .generations li.current .state {

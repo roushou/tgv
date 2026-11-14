@@ -279,6 +279,34 @@ impl Toolset {
         })
     }
 
+    /// The plan that makes the next generation hold exactly what `older`
+    /// held: its installs, whatever the catalog pins now. It fetches
+    /// nothing, so every install `older` holds must still be in the store.
+    pub fn back_to(&self, older: &Toolset) -> Plan {
+        let mut changes = Vec::new();
+        for (id, install) in &older.installs {
+            match self.installs.get(id) {
+                Some(current) if current == install => {}
+                Some(current) => changes.push(Change::Replace {
+                    from: current.clone(),
+                    to: install.clone(),
+                }),
+                None => changes.push(Change::Add(install.clone())),
+            }
+        }
+        changes.extend(
+            self.installs
+                .iter()
+                .filter(|(id, _)| !older.installs.contains_key(*id))
+                .map(|(_, install)| Change::Remove(install.clone())),
+        );
+        Plan {
+            from: self.generation,
+            changes,
+            fetches: Vec::new(),
+        }
+    }
+
     /// The install folders the toolsets in `live` hold: the current
     /// generation and every generation a live run started with. Collection
     /// keeps these and removes every other folder in the store.
@@ -474,6 +502,53 @@ mod tests {
             one.wanted_after(&edit(&[PackageId::JQ], &[PackageId::JQ])),
             Err(PlanError::Conflicting(PackageId::JQ))
         );
+    }
+
+    #[test]
+    fn going_back_restores_an_older_generations_installs_as_the_next() {
+        let empty = Toolset::empty();
+        let one = empty
+            .plan(
+                &depot("22.17.1", 'a'),
+                Platform::LinuxX64,
+                &wanted(&[PackageId::NODE, PackageId::JQ]),
+            )
+            .unwrap()
+            .apply(&empty)
+            .unwrap();
+        let two = one
+            .plan(
+                &depot("24.1.0", 'c'),
+                Platform::LinuxX64,
+                &wanted(&[PackageId::NODE]),
+            )
+            .unwrap()
+            .apply(&one)
+            .unwrap();
+        let back = two.back_to(&one);
+        assert!(back.fetches().is_empty());
+        assert!(
+            matches!(
+                back.changes(),
+                [Change::Replace { from, to }, Change::Add(jq)]
+                    if from.version.to_string() == "24.1.0"
+                        && to.version.to_string() == "22.17.1"
+                        && jq.package == PackageId::JQ
+            ) || matches!(
+                back.changes(),
+                [Change::Add(jq), Change::Replace { from, to }]
+                    if from.version.to_string() == "24.1.0"
+                        && to.version.to_string() == "22.17.1"
+                        && jq.package == PackageId::JQ
+            )
+        );
+        let three = back.apply(&two).unwrap();
+        assert_eq!(three.generation().number(), 3);
+        assert_eq!(
+            three.installs().collect::<Vec<_>>(),
+            one.installs().collect::<Vec<_>>()
+        );
+        assert!(three.back_to(&one).is_empty());
     }
 
     #[test]

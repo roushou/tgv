@@ -5,7 +5,7 @@
 use futures_util::future::BoxFuture;
 use ren_depot::{
     job::Stage,
-    package::{Kind, PackageId},
+    package::{Kind, PackageId, ProgramName},
     source::Platform,
     toolset::{Edit, Generation, PlanError},
 };
@@ -23,6 +23,12 @@ pub trait Toolbox: Send + Sync + 'static {
     /// Apply `edit` to the current generation, installing what it adds.
     fn change(&self, edit: Edit) -> BoxFuture<'static, Result<ToolChange, ToolboxError>>;
 
+    /// Make the next generation hold what a kept `generation` held.
+    fn roll_back(
+        &self,
+        generation: Generation,
+    ) -> BoxFuture<'static, Result<ToolChange, ToolboxError>>;
+
     /// Remove generations and installs nothing current or running uses.
     fn collect(&self) -> BoxFuture<'static, Result<ToolCollection, ToolboxError>>;
 }
@@ -36,6 +42,10 @@ pub enum ToolboxError {
     Unsupported,
     #[error(transparent)]
     Refused(#[from] PlanError),
+    #[error("generation {0} is not kept")]
+    NoGeneration(Generation),
+    #[error("generation {0}'s installs were removed")]
+    Collected(Generation),
     #[error("the tool store failed: {0}")]
     Failed(String),
 }
@@ -48,6 +58,9 @@ pub struct ToolListing {
     pub platform: Option<Platform>,
     /// The current generation; 0 before any.
     pub generation: Generation,
+    /// The current generation's folder of programs, which runs put first on
+    /// their search path; `None` before any.
+    pub bin: Option<String>,
     pub packages: Vec<ToolPackage>,
     /// Every generation kept, newest first.
     pub generations: Vec<GenerationView>,
@@ -58,6 +71,8 @@ pub struct ToolListing {
 pub struct ToolPackage {
     pub id: PackageId,
     pub kind: Kind,
+    /// The program it provides (`rg` for `ripgrep`).
+    pub program: ProgramName,
     /// The release Ren installs; `None` for a package it only finds.
     pub release: Option<semver::Version>,
     /// What the current generation holds of it.

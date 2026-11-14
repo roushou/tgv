@@ -383,10 +383,11 @@ The runtimes and utilities Ren installs on the daemon's host for its agents
 (see [tools for agents](clients.md#tools-for-agents)). Access is the control
 API's; `ren tools` on the host prints the same JSON (`list --json`).
 
-- `GET /control/v1/tools`: `{api_version, platform, generation, packages,
-  generations}`. `platform` is `linux_x64`, `linux_arm64`, `macos_arm64`, or
+- `GET /control/v1/tools`: `{api_version, platform, generation, bin, packages,
+  generations}`; `bin` is the current generation's folder of programs (`null`
+  before any). `platform` is `linux_x64`, `linux_arm64`, `macos_arm64`, or
   `null` where Ren installs nothing. Each package has `id`, `kind` (`client`,
-  `runtime`, `utility`), the `release` Ren installs (`null`: only found on
+  `runtime`, `utility`), the `program` it provides, the `release` Ren installs (`null`: only found on
   `PATH`), what the current generation holds (`installed`: `version`,
   `sha256`, `dir`), what the daemon's `PATH` has (`system`: `path`, the
   `version` it reported, or `unread`, what it printed instead), and the
@@ -401,6 +402,11 @@ API's; `ren tools` on the host prints the same JSON (`list --json`).
   changes, failures}`, with `outcome` `unchanged`, `activated`, or `failed`
   (each failure with its `package`, `version`, `stage`, and `reason`; the
   current generation stays).
+- `POST /control/v1/tools/rollback` `{"generation": n}` makes the next
+  generation hold exactly what generation `n` held, from installs still in
+  the store (nothing is downloaded), and answers as a change does. `404`
+  `tools_no_generation` when `n` is not kept; `409` `tools_collected` when
+  its installs were removed.
 - `POST /control/v1/tools/gc` removes every generation but the current one and
   those in use, and every install none of them holds: `{api_version,
   generations, installs}`.

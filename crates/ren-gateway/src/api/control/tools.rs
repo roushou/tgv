@@ -6,6 +6,8 @@
 //! - `POST /control/v1/tools/change` `{"add": [...], "remove": [...]}`:
 //!   install what is added and make the next generation current, only if
 //!   every install succeeds. Answers when done.
+//! - `POST /control/v1/tools/rollback` `{"generation": n}`: make the next
+//!   generation hold what a kept generation held, from the store.
 //! - `POST /control/v1/tools/gc`: remove generations and installs nothing
 //!   current or running uses.
 //!
@@ -21,7 +23,10 @@ use axum::{
     routing::{get, post},
 };
 use http::{HeaderMap, StatusCode};
-use ren_depot::{package::PackageId, toolset::Edit};
+use ren_depot::{
+    package::PackageId,
+    toolset::{Edit, Generation},
+};
 use serde::Serialize;
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -37,6 +42,12 @@ struct ChangeRequest {
     add: BTreeSet<PackageId>,
     #[serde(default)]
     remove: BTreeSet<PackageId>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RollbackRequest {
+    generation: Generation,
 }
 
 #[derive(Serialize)]
@@ -60,6 +71,16 @@ impl IntoResponse for Untooled {
             Self::Access(refusal) => return refusal.into_response(),
             Self::Disabled => (StatusCode::SERVICE_UNAVAILABLE, "tools_disabled", None),
             Self::Toolbox(ToolboxError::Busy) => (StatusCode::CONFLICT, "tools_busy", None),
+            Self::Toolbox(error @ ToolboxError::NoGeneration(_)) => (
+                StatusCode::NOT_FOUND,
+                "tools_no_generation",
+                Some(error.to_string()),
+            ),
+            Self::Toolbox(error @ ToolboxError::Collected(_)) => (
+                StatusCode::CONFLICT,
+                "tools_collected",
+                Some(error.to_string()),
+            ),
             Self::Toolbox(ToolboxError::Unsupported) => {
                 (StatusCode::NOT_IMPLEMENTED, "tools_unsupported", None)
             }
@@ -90,6 +111,7 @@ impl ToolsApi {
         Router::new()
             .route("/control/v1/tools", get(Self::listing))
             .route("/control/v1/tools/change", post(Self::change))
+            .route("/control/v1/tools/rollback", post(Self::roll_back))
             .route("/control/v1/tools/gc", post(Self::collect))
             .with_state(Arc::new(self))
     }
@@ -134,6 +156,21 @@ impl ToolsApi {
             remove: request.remove,
         };
         Self::answer::<ToolChange>(toolbox.change(edit).await)
+    }
+
+    async fn roll_back(
+        State(api): State<Arc<Self>>,
+        headers: HeaderMap,
+        body: Result<Json<RollbackRequest>, JsonRejection>,
+    ) -> Response {
+        let toolbox = match api.toolbox(&headers) {
+            Ok(toolbox) => toolbox,
+            Err(refused) => return refused.into_response(),
+        };
+        let Ok(Json(request)) = body else {
+            return Refusal::Invalid.into_response();
+        };
+        Self::answer::<ToolChange>(toolbox.roll_back(request.generation).await)
     }
 
     async fn collect(State(api): State<Arc<Self>>, headers: HeaderMap) -> Response {

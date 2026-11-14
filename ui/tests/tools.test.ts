@@ -14,10 +14,12 @@ const wire = {
   api_version: 1,
   platform: 'linux_x64',
   generation: 3,
+  bin: '/data/tools/generations/3/bin',
   packages: [
     {
       id: 'claude',
       kind: 'client',
+      program: 'claude',
       release: null,
       installed: null,
       system: { path: '/opt/acme/bin/claude', version: '2.1.0', unread: null },
@@ -26,6 +28,7 @@ const wire = {
     {
       id: 'node',
       kind: 'runtime',
+      program: 'node',
       release: '26.13.1',
       installed: {
         version: '24.1.0',
@@ -38,6 +41,7 @@ const wire = {
     {
       id: 'jq',
       kind: 'utility',
+      program: 'jq',
       release: '1.8.2',
       installed: { version: '1.8.2', sha256: 'cd'.repeat(32), dir: 'jq/1.8.2-cdcdcdcdcdcdcdcd' },
       system: { path: '/usr/bin/jq', version: null, unread: 'jq built by acme' },
@@ -46,6 +50,7 @@ const wire = {
     {
       id: 'fd',
       kind: 'utility',
+      program: 'fd',
       release: '10.5.2',
       installed: null,
       system: null,
@@ -54,12 +59,21 @@ const wire = {
     {
       id: 'git',
       kind: 'utility',
+      program: 'git',
       release: null,
       installed: null,
       system: null,
       needed_by: [],
     },
-    { id: 'zig', kind: 'compiler', release: null, installed: null, system: null, needed_by: [] },
+    {
+      id: 'zig',
+      kind: 'compiler',
+      program: 'zig',
+      release: null,
+      installed: null,
+      system: null,
+      needed_by: [],
+    },
   ],
   generations: [
     {
@@ -178,7 +192,11 @@ test('changes and collections post their bodies; refusals read as sentences', as
   );
   const changed = await api.change(new ToolPlan(['fd' as never]));
   assert.equal(changed.outcome, 'activated');
-  assert.deepEqual(seen, ['POST /control/tools/change {"add":["fd"],"remove":[]}']);
+  await api.rollBack(2 as never);
+  assert.deepEqual(seen, [
+    'POST /control/tools/change {"add":["fd"],"remove":[]}',
+    'POST /control/tools/rollback {"generation":2}',
+  ]);
 
   const refused = new ToolsApi(
     respond(422, { error: 'tools_refused', message: 'fd is not installed by Ren' }),

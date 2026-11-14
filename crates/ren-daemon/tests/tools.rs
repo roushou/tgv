@@ -198,10 +198,56 @@ async fn lists_installs_removes_and_collects_through_the_control_api() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(changed["generation"], 2);
+
+    // Back to generation 1: its jq comes back from the store as generation 3.
+    let (status, back) = call(
+        &gateway,
+        "POST",
+        "/control/v1/tools/rollback",
+        Some(json!({"generation": 1})),
+    )
+    .await;
+    assert_eq!(status, 200, "{back}");
+    assert_eq!(back["outcome"], "activated");
+    assert_eq!(back["generation"], 3);
+    assert_eq!(
+        back["changes"],
+        json!([{"change": "add", "package": "jq", "from": null, "to": "1.8.2"}])
+    );
+    let (_, again) = call(
+        &gateway,
+        "POST",
+        "/control/v1/tools/rollback",
+        Some(json!({"generation": 1})),
+    )
+    .await;
+    assert_eq!(again["outcome"], "unchanged");
+    let (status, body) = call(
+        &gateway,
+        "POST",
+        "/control/v1/tools/rollback",
+        Some(json!({"generation": 9})),
+    )
+    .await;
+    assert_eq!(
+        (status, &body["error"]),
+        (404, &json!("tools_no_generation"))
+    );
+
+    // Collection keeps the current generation's jq and removes 1 and 2.
     let (status, collected) = call(&gateway, "POST", "/control/v1/tools/gc", None).await;
     assert_eq!(status, 200, "{collected}");
-    assert_eq!(collected["generations"], json!([1]));
-    assert_eq!(collected["installs"].as_array().unwrap().len(), 1);
+    assert_eq!(collected["generations"], json!([1, 2]));
+    assert_eq!(collected["installs"], json!([]));
+    let (_, listing) = call(&gateway, "GET", "/control/v1/tools", None).await;
+    assert_eq!(listing["generation"], 3);
+    assert_eq!(listing["packages"][0]["program"], "jq");
+    assert!(
+        listing["bin"]
+            .as_str()
+            .unwrap()
+            .ends_with("tools/generations/3/bin")
+    );
 }
 
 #[tokio::test]

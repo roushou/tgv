@@ -129,6 +129,8 @@ git are only found on `PATH`, never installed.
 ren tools list
 ren tools install node jq
 ren tools remove jq
+ren tools rollback 2    # a new generation holding what generation 2 held
+ren tools which jq      # the program a new run finds
 ren tools gc
 ```
 

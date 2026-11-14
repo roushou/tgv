@@ -116,6 +116,7 @@ test('starting, listing, projects, models, answering, history edits, and the fee
     new Request('http://ui.test/control/tools', { headers: { 'sec-fetch-site': 'same-origin' } }),
   );
   await proxy.respond(post('/control/tools/change', { add: ['jq'] }));
+  await proxy.respond(post('/control/tools/rollback', { generation: 1 }));
   await proxy.respond(post('/control/tools/gc', {}));
   const feed = await proxy.respond(new Request('http://ui.test/control/runs/events'));
   assert.equal(await feed.text(), ': connected\n\nevent: run\ndata: {}\n\n');
@@ -134,6 +135,7 @@ test('starting, listing, projects, models, answering, history edits, and the fee
     `POST /control/v1/history/runs/${run}/delete`,
     'GET /control/v1/tools',
     'POST /control/v1/tools/change',
+    'POST /control/v1/tools/rollback',
     'POST /control/v1/tools/gc',
     'GET /control/v1/runs/events',
   ]);

@@ -55,6 +55,8 @@ pub enum ToolStoreError {
     Unsupported,
     #[error("another change to the tool store is in progress")]
     Busy,
+    #[error("generation {0} is not kept")]
+    NoGeneration(Generation),
 }
 
 impl ToolStoreError {
@@ -364,6 +366,28 @@ impl<F: Fetch> ToolStore<F> {
         let jobs = self.install_plan(&plan).await;
         if jobs.iter().any(|(_, state)| *state != JobState::Installed) {
             return Ok(Changed::Failed { current, jobs });
+        }
+        let changes = plan.changes().to_vec();
+        let toolset = self.activate_locked(plan)?;
+        Ok(Changed::Activated { toolset, changes })
+    }
+
+    /// Make the next generation hold exactly what `generation` held, from
+    /// installs still in the store; nothing is downloaded. The store is
+    /// locked throughout.
+    pub fn roll_back(&self, generation: Generation) -> Result<Changed, ToolStoreError> {
+        let _lock = self.lock()?;
+        let current = self.current()?;
+        if generation == Generation::NONE || !self.generation_dir(generation).is_dir() {
+            return Err(ToolStoreError::NoGeneration(generation));
+        }
+        let older = self.generation(generation)?;
+        if let Some(missing) = older.installs().find(|install| !self.has(install)) {
+            return Err(ToolStoreError::NotInstalled(missing.package.clone()));
+        }
+        let plan = current.back_to(&older);
+        if plan.is_empty() {
+            return Ok(Changed::Unchanged(current));
         }
         let changes = plan.changes().to_vec();
         let toolset = self.activate_locked(plan)?;

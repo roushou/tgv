@@ -114,8 +114,10 @@ below says whether it is built. Record every deviation here, with its reason.
 4. **Control API and CLI.** Built: `/control/v1/tools` (listing, change,
    collection) through the gateway's `Toolbox` port, implemented by the
    daemon's `HostToolbox`, which `ren tools list|install|remove|gc` uses too,
-   so both print the same JSON. Not built: rollback to an older generation,
-   and `which`.
+   so both print the same JSON. Rollback (`ren tools rollback`,
+   `/control/v1/tools/rollback`, "Restore" in the view) makes a new
+   generation holding what a kept one held, from the store; `ren tools
+   which` names the program a new run finds.
 5. **Tools view.** Built (`/tools`): one flush table grouped by kind
    (standing, Ren's release, the install, what `PATH` has, with each row's
    one change), changes staged in a plan bar and applied as one generation,
@@ -123,7 +125,7 @@ below says whether it is built. Record every deviation here, with its reason.
    has, the clients that need it, and the generations kept with
    "Remove unused". Verified in the dev slot (install, removal, collection
    keeping a live run's generation, and a run's agent getting the
-   generation's `bin` first on its `PATH`). Not built: rollback, and the
-   runs that used each generation.
+   generation's `bin` first on its `PATH`). Not built: the runs that used
+   each generation, listed beside it.
 6. **Ren's own packages and project requirements.** Not built. `Build`
    sources, and requirements a project declares.
