@@ -8,6 +8,7 @@ use crate::{
     opencode::{OpenCodeAcp, OpenCodeModels},
     pi::{PiCache, PiCacheError, PiModels, PiRpc},
 };
+use ren_depot::package::{PackageId, Requirement};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -131,6 +132,21 @@ impl Harness {
             Self::ClaudeCode => Ok("claude"),
             Self::Pi => Ok("pi"),
             Self::OpenCode => Ok("opencode"),
+        }
+    }
+
+    /// The packages this harness needs on the host it runs on: its own
+    /// program, and the runtime that program runs on, where it needs one.
+    /// No version bound is stated where the client documents none.
+    pub fn requirements(self) -> Vec<Requirement> {
+        match self {
+            Self::ClaudeCode => vec![Requirement::any(PackageId::CLAUDE)],
+            Self::Codex => vec![Requirement::any(PackageId::CODEX)],
+            Self::Pi => vec![
+                Requirement::any(PackageId::PI),
+                Requirement::any(PackageId::NODE),
+            ],
+            Self::OpenCode => vec![Requirement::any(PackageId::OPENCODE)],
         }
     }
 
@@ -360,6 +376,24 @@ mod tests {
     /// opencode is driven in its ACP mode through the same provider
     /// override as a launched session, which also carries the run's approval
     /// policy as permission rules.
+    #[test]
+    fn every_requirement_is_a_catalog_package_and_names_the_driven_program() {
+        let depot = ren_depot::Depot::builtin();
+        for harness in <Harness as strum::VariantArray>::VARIANTS {
+            let requirements = harness.requirements();
+            for requirement in &requirements {
+                assert!(depot.package(requirement.package()).is_some(), "{harness}");
+            }
+            let program = harness.driven_program().unwrap();
+            assert!(
+                requirements.iter().any(|requirement| depot
+                    .package(requirement.package())
+                    .is_some_and(|package| package.program().as_str() == program)),
+                "{harness} does not require {program}"
+            );
+        }
+    }
+
     #[test]
     fn drives_opencode_over_acp_with_its_policy_as_permission_rules() {
         let gateway = GatewayEndpoint::parse("http://127.0.0.1:8787").unwrap();

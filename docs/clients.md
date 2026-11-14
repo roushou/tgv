@@ -28,13 +28,15 @@ ren run codex --dry-run
 ```
 
 `doctor` checks local configuration, upstream URL validity, read-only history,
-Unix storage mode bits, client availability on `PATH`, and the daemon's health
-and storage APIs. It reports capture loss separately from storage failures,
+Unix storage mode bits, the clients, runtimes, and utilities on `PATH` (each
+with the version it reports), and the daemon's health and storage APIs. It reports capture loss separately from storage failures,
 and warns when the daemon runs a different build from the CLI (see
 [builds](api.md#builds)).
-It does not execute clients, read credential files, run credential helpers, test
+It runs each program it finds only as `<program> --version`, for at most about
+three seconds; it does not read credential files, run credential helpers, test
 provider connectivity, or consume subscription allowance. Missing clients are
-warnings. Exit code is 0 with no failed checks (warnings can remain), 1 on a failed
+warnings, as is a missing runtime a client found here needs (Pi needs `node`);
+other missing tools are skipped. Exit code is 0 with no failed checks (warnings can remain), 1 on a failed
 check, and 2 for invalid CLI syntax. JSON output includes `ok` and `checks`.
 These are readiness checks, not a full database-integrity or disk-space check.
 

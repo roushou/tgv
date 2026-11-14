@@ -13,6 +13,7 @@ description = "Configuration, resource wiring, and lifecycle of the Ren LLM gate
 # ren-gateway (docs/architecture.md).
 [dependencies]
 ignore = "0.4.25"
+ren-depot.workspace = true
 ren-gateway.workspace = true
 ren-harness.workspace = true
 ren-protocol.workspace = true

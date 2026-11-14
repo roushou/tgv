@@ -6,7 +6,7 @@ and exposing it, using the operator's own Anthropic and OpenAI subscriptions. On
 a laptop and a VPS reached through Tailscale.
 
 [`docs/architecture.md`](docs/architecture.md) describes how Ren is built and
-lists its known limitations. Section 4 below maps the eight crates and the `xtask` package.
+lists its known limitations. Section 4 below maps the nine crates and the `xtask` package.
 
 - All code follows the principles (section 2) and the workspace lints.
 - Never describe unbuilt functionality as working. Read the source before assuming
@@ -138,8 +138,9 @@ Modules carry no lint headers of their own. A module with submodules lives in
 
 - The only exemptions are the capability implementations themselves, marked with
   `#[expect(clippy::disallowed_methods, reason = "…")]`: `HostEnv::capture`, the
-  daemon's `SystemClock`, `RandomIds`, and `ProcessHost` (`ren_daemon::host`, its process
-  starts and its program lookup on the agents' `PATH`), and the daemon's server
+  daemon's `SystemClock`, `RandomIds`, `ProcessHost` (`ren_daemon::host`, its process
+  starts and its program lookup on the agents' `PATH`), and `HostTools` (its
+  `--version` probes), and the daemon's server
   and supervisor task spawns. The recorder runs on `ObservationThread` (`ren_daemon::host`), a
   thread with its own runtime.
 - Integration-test crates (`crates/*/tests/*.rs`) act as a shell: each has one
@@ -166,7 +167,7 @@ saturation, and persistence recovery.
 
 ## 4. Workspace map
 
-This map describes the code as it is: the eight crates, listed with their
+This map describes the code as it is: the nine crates, listed with their
 dependencies under "Crates" below. Read the code for current module ownership.
 
 - `docs/architecture.md`: how Ren is built, and its known limitations. The other
@@ -187,6 +188,19 @@ dependencies under "Crates" below. Read the code for current module ownership.
   the native identifiers and message hints the wire carries (`native`). Its
   manifest allows only pure dependencies, and a test keeps its sources free of
   I/O.
+- `crates/ren-depot`: the tools Ren's agents run with, with `Depot` as its
+  primary type: the built-in package catalog (`package`: `Package`,
+  `PackageId`, `ProgramName`, and `Kind`, client, runtime, or utility), a
+  `Requirement` (a package and a `semver` range), a program's version read
+  from its own `--version` output (`version`: `ObservedVersion`, which keeps
+  output it cannot read and probes that did not answer), and what a host
+  provides and whether it fits (`provision`: `Provision`, `Fit`). It reaches
+  the host only through its `ToolHost` port, which the daemon's `HostTools`
+  implements; `ren doctor` surveys the host with it. Today it only observes;
+  the plan for installing, pinned toolsets, and their UI is
+  `docs/plans/dependencies.md`, where deviations from it are recorded. Its
+  manifest allows only pure dependencies, and `src/purity.rs` keeps its
+  sources free of I/O.
 - `crates/ren-harness`: the harnesses, with `Harness` (`ClaudeCode`, `Codex`, `Pi`, `OpenCode`)
   as its primary type. Each client is one module holding everything Ren
   knows of it: `codex` (the `CodexAppServer` codec for `codex app-server`
@@ -200,7 +214,8 @@ dependencies under "Crates" below. Read the code for current module ownership.
   types, with `HeaderReading`, which each client's headers extend, behind
   `Harness::attribution`); launch plans (`launch`: `LaunchPlan`, each client
   a named constructor, behind `Harness::launch`, `Harness::drive`, and
-  `Harness::list_models`); what tools and messages mean for activity
+  `Harness::list_models`, and the packages each client needs on its host,
+  `Harness::requirements`); what tools and messages mean for activity
   (`tools`: effects, the user context each client adds, exit codes, why a
   client sent a call (`CallPurpose`: work, or Claude Code's quota probe),
   and `InterpretedCall`, a `Reading` read as its client uses it); driving a
@@ -458,7 +473,8 @@ directly.
 | Crate                                      | Primary type                                        | Depends on        |
 | ------------------------------------------ | --------------------------------------------------- | ----------------- |
 | `ren-protocol`                             | `CallInspector`                                     | none of ours      |
-| `ren-harness`                              | `Harness` (`ClaudeCode`, `Codex`, `Pi`, `OpenCode`) | protocol          |
+| `ren-depot`                                | `Depot`, with its `ToolHost` port                   | none of ours      |
+| `ren-harness`                              | `Harness` (`ClaudeCode`, `Codex`, `Pi`, `OpenCode`) | protocol, depot   |
 | `ren-recorder`                             | `Recorder`, with its `RecordSink` port              | protocol, harness |
 | `ren-store`                                | `Store`, which implements `RecordSink`              | recorder          |
 | `ren-supervisor`                           | `Supervisor`, with its `AgentHost` port             | recorder, harness |
