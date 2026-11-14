@@ -7,7 +7,9 @@
     Platforms,
     RowActions,
     Supplies,
+    ToolFilters,
     ToolGroups,
+    type Only,
     ToolPlan,
     ToolsApi,
     ToolsError,
@@ -48,7 +50,9 @@
   let collecting = $state<string | null>(null);
 
   const listing = $derived(loaded.kind === 'ready' ? loaded.listing : null);
-  const groups = $derived(listing ? ToolGroups.of(listing) : []);
+  let filter = $state(ToolFilters.ALL);
+  const groups = $derived(listing ? ToolGroups.of(listing, filter) : []);
+  const narrow = (only: Only) => (filter = { ...filter, only: filter.only === only ? null : only });
   const changes = $derived(listing ? plan.changes(listing) : []);
   const chosen = $derived(listing?.packages.find((p) => p.id === selected) ?? null);
 
@@ -128,20 +132,34 @@
 {#snippet scope()}
   {#if listing && tally}
     <div class="scope-group tally" aria-label="Tools">
-      <span class="chip success" title="Installed by Ren, first on runs’ PATH"
-        ><span class="dot managed"></span>{tally.managed} managed</span
-      >
-      <span class="chip" title="Found on the daemon’s PATH"
-        ><span class="dot system"></span>{tally.system} system</span
-      >
-      {#if tally.missing > 0}
-        <span class="chip error" title="Needed by a client, found nowhere"
-          ><span class="dot missing"></span>{tally.missing} missing</span
+      <label class="search-input search">
+        <Icon name="search" size={12} />
+        <input
+          type="search"
+          placeholder="Filter"
+          aria-label="Filter tools"
+          value={filter.query}
+          oninput={(event) => (filter = { ...filter, query: event.currentTarget.value })}
+        />
+      </label>
+      {#snippet narrowing(only: Only, count: number, word: string, tone: string)}
+        <button
+          class="chip filter {tone}"
+          class:active={filter.only === only}
+          aria-pressed={filter.only === only}
+          onclick={() => narrow(only)}
+          ><span class="dot {only === 'updates' ? 'managed' : only}"></span>{count} {word}</button
         >
-      {/if}
-      {#if tally.updates > 0}
-        <span class="chip live">{tally.updates} update{tally.updates === 1 ? '' : 's'}</span>
-      {/if}
+      {/snippet}
+      {@render narrowing('managed', tally.managed, 'managed', 'success')}
+      {@render narrowing('system', tally.system, 'system', '')}
+      {#if tally.missing > 0}{@render narrowing('missing', tally.missing, 'missing', 'error')}{/if}
+      {#if tally.updates > 0}{@render narrowing(
+          'updates',
+          tally.updates,
+          tally.updates === 1 ? 'update' : 'updates',
+          'live',
+        )}{/if}
       {#if listing.platform}
         <span class="chip mono">{Platforms.label(listing.platform)}</span>
       {:else}
@@ -166,48 +184,60 @@
     </div>
   {:else if listing}
     <section class="tools-main" aria-label="Packages">
-      {#each groups as group (group.kind)}
-        <section class="group" aria-label={group.title}>
-          <h2>{group.title}</h2>
-          <div class="tiles">
+      <table class="tools-table">
+        <colgroup>
+          <col class="c-name" />
+          <col class="c-version" />
+          <col />
+          <col class="c-action" />
+        </colgroup>
+        {#each groups as group (group.kind)}
+          <tbody>
+            <tr class="tools-group">
+              <th colspan="4" scope="rowgroup"
+                >{group.title} <span class="count">{group.packages.length}</span></th
+              >
+            </tr>
             {#each group.packages as pkg (pkg.id)}
               {@const label = action(pkg)}
               {@const supply = Supplies.of(pkg)}
               {@const change = staged.get(pkg.id)}
-              <div
-                class="tile {Supplies.tone(pkg)}"
+              <tr
+                class="tools-row"
                 class:selected={selected === pkg.id}
                 class:staged={change !== undefined}
-                role="button"
-                tabindex="0"
                 onclick={() => (selected = pkg.id)}
-                onkeydown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') selected = pkg.id;
-                }}
               >
-                <div class="line">
-                  <span class="name mono">{@render dot(pkg)}{pkg.id}</span>
-                  {#if pkg.origin === 'operator'}<span
+                <td class="mono name"
+                  >{@render dot(pkg)}{pkg.id}{#if pkg.origin === 'operator'}<span
                       class="chip tag"
                       title="Added in the daemon’s configuration">custom</span
                     >{:else if pkg.origin === null}<span
                       class="chip warning tag"
                       title="No longer in the daemon’s configuration">removed</span
-                    >{/if}
-                </div>
-                <div class="line">
-                  <span class="version mono">
-                    {#if change}
-                      <s class="muted">{change.from ?? '—'}</s><span class="arrow">→</span><span
-                        class="to {change.toKind}">{change.to ?? '—'}</span
-                      >
-                    {:else if supply.kind === 'managed'}{supply.version}
-                    {:else if supply.kind === 'system'}{#if supply.system.version}{supply.system
-                          .version}{:else}<span class="unknown" title={supply.system.unread ?? ''}
-                          >?</span
-                        >{/if}
-                    {:else}<span class="muted">—</span>{/if}
-                  </span>
+                    >{/if}</td
+                >
+                <td class="mono"
+                  >{#if change}<s class="muted">{change.from ?? '—'}</s><span class="arrow">→</span
+                    ><span class="to {change.toKind}">{change.to ?? '—'}</span
+                    >{:else if supply.kind === 'managed'}{supply.version}{:else if supply.kind === 'system'}{#if supply.system.version}{supply
+                        .system.version}{:else}<span
+                        class="unknown"
+                        title={supply.system.unread ?? ''}>?</span
+                      >{/if}{:else}<span class="muted">—</span>{/if}</td
+                >
+                <td class="source"
+                  >{#if supply.kind === 'managed'}<span class="chip success">Ren</span
+                    >{#if supply.shadows}<span
+                        class="mono muted path shadowed"
+                        title="Runs find Ren’s first">{supply.shadows.path}</span
+                      >{/if}{:else if supply.kind === 'system'}<span class="chip">system</span><span
+                      class="mono muted path">{supply.system.path}</span
+                    >{:else if pkg.needed_by.length > 0}<span class="chip error"
+                      >missing · {pkg.needed_by.map(harnessLabel).join(', ')}</span
+                    >{/if}</td
+                >
+                <td class="end">
                   {#if label && listing.platform}
                     <button
                       class="button small"
@@ -218,29 +248,16 @@
                       }}>{label}</button
                     >
                   {/if}
-                </div>
-                <div class="line source">
-                  {#if supply.kind === 'managed'}
-                    <span class="chip success">Ren</span>{#if supply.shadows}<span
-                        class="mono muted path shadowed"
-                        title="Runs find Ren’s first">{supply.shadows.path}</span
-                      >{/if}
-                  {:else if supply.kind === 'system'}
-                    <span class="chip">system</span><span
-                      class="mono muted path"
-                      title={supply.system.path}>{supply.system.path}</span
-                    >
-                  {:else if pkg.needed_by.length > 0}
-                    <span class="chip error"
-                      >missing · {pkg.needed_by.map(harnessLabel).join(', ')}</span
-                    >
-                  {/if}
-                </div>
-              </div>
+                </td>
+              </tr>
             {/each}
-          </div>
-        </section>
-      {/each}
+          </tbody>
+        {:else}
+          <tbody>
+            <tr><td colspan="4" class="muted">No tool matches.</td></tr>
+          </tbody>
+        {/each}
+      </table>
     </section>
     <aside class="tools-inspector" aria-label="Details">
       {#if !plan.empty || applying.kind !== 'idle'}
@@ -413,67 +430,66 @@
   .tools-main {
     overflow: auto;
   }
-  .group h2 {
-    margin: 0;
-    padding: 5px 12px;
+  .tools-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 12px;
+  }
+  .c-name {
+    width: 220px;
+  }
+  .c-version {
+    width: 160px;
+  }
+  .c-action {
+    width: 128px;
+  }
+  td,
+  th {
+    text-align: left;
+    padding: 0 12px;
+    height: 30px;
+    vertical-align: middle;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tools-group th {
+    height: 24px;
     font-size: 11px;
     font-weight: 600;
     color: var(--muted);
     background: var(--surface-subtle);
-    border-bottom: 1px solid var(--line);
   }
-  .tiles {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-    border-bottom: 1px solid var(--line);
-    overflow: hidden;
+  .tools-group .count {
+    font-weight: 400;
+    margin-left: 4px;
   }
-  .tile {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-    padding: 8px 10px;
-    background: var(--surface);
+  .tools-row {
     cursor: pointer;
-    font-size: 12px;
-    /* 1px rules between tiles; the last row's bottom rule is the grid's. */
-    box-shadow:
-      1px 0 0 var(--line),
-      0 1px 0 var(--line);
   }
-  .tile:hover {
+  .tools-row:hover {
     background: var(--row-hover);
   }
-  .tile.selected {
+  .tools-row.selected {
     background: var(--row-selected);
   }
-  .tile.staged {
-    box-shadow:
-      inset 2px 0 0 var(--accent),
-      1px 0 0 var(--line),
-      0 1px 0 var(--line);
+  .tools-row.staged td:first-child {
+    box-shadow: inset 2px 0 0 var(--accent);
   }
-  .tile:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
+  td.end {
+    text-align: right;
+    padding: 0 8px;
   }
-  .line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    min-height: 24px;
+  td.end .button {
+    vertical-align: middle;
   }
   .name {
     font-weight: 600;
   }
-  .version {
-    flex: 1;
-    min-width: 0;
-    font-size: 13px;
-  }
-  .version .arrow {
+  .arrow {
     margin: 0 4px;
     color: var(--muted);
   }
@@ -483,17 +499,33 @@
   .to.none {
     color: var(--error);
   }
-  .source .chip {
+  td > .chip {
     margin: 0;
     padding: 0 6px;
     font-size: 11px;
     line-height: 16px;
+    vertical-align: 1px;
   }
-  .tag {
-    margin: 0;
-    padding: 0 6px;
-    font-size: 11px;
-    line-height: 16px;
+  td > .tag {
+    margin-left: 8px;
+    font-weight: 400;
+    font-family: inherit;
+  }
+  .source .path {
+    margin-left: 8px;
+  }
+  .search {
+    width: 160px;
+    height: 24px;
+    border: 1px solid var(--control-border);
+    border-radius: 2px;
+  }
+  .chip.filter {
+    cursor: pointer;
+    font: inherit;
+  }
+  .chip.filter.active {
+    box-shadow: inset 0 0 0 1px currentColor;
   }
   .path {
     min-width: 0;

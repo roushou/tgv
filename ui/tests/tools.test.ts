@@ -5,6 +5,7 @@ import {
   RowActions,
   Standings,
   Supplies,
+  ToolFilters,
   ToolGroups,
   ToolPlan,
   ToolsApi,
@@ -308,4 +309,17 @@ test('a staged change shows the version runs use before and after it', async () 
       toKind: 'managed',
     },
   );
+});
+
+test('the view narrows by name, program, or path, and by how packages stand', async () => {
+  const read = await listing();
+  const ids = (query: string, only: Parameters<typeof ToolFilters.keeps>[1]['only']) =>
+    ToolGroups.of(read, { query, only }).flatMap((g) => g.packages.map((p) => p.id));
+  assert.deepEqual(ids('', 'managed'), ['node', 'jq', 'acme-lint']);
+  assert.deepEqual(ids('', 'system'), ['claude']);
+  assert.deepEqual(ids('', 'updates'), ['node']);
+  assert.deepEqual(ids('', 'missing'), []);
+  assert.deepEqual(ids('/opt/acme', null), ['claude']);
+  assert.deepEqual(ids('J', null), ['jq']);
+  assert.deepEqual(ids('jq', 'system'), []);
 });

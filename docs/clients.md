@@ -176,8 +176,9 @@ later change makes a new generation for later runs, and `gc` keeps every
 generation a run without an end still uses (as the database records it).
 With nothing installed, runs get the daemon's `PATH` unchanged.
 
-The web UI's Tools view shows the same on the daemon's host: a tile per
-package with the version runs use and where it comes from (Ren's install,
+The web UI's Tools view shows the same on the daemon's host, filterable by
+name or path and by source: a row per package with the version runs use and
+where it comes from (Ren's install,
 first on their `PATH` over any copy the daemon's `PATH` has, or that copy);
 staged changes, as the versions runs use before and after; the earlier
 toolsets, as history; and which clients need what. Installs, updates, and removals are staged and then

@@ -479,8 +479,46 @@ export interface KindGroup {
   packages: ToolPackage[];
 }
 
+/** A header chip's narrowing: one way packages stand. */
+export type Only = 'managed' | 'system' | 'missing' | 'updates';
+
+/** What the view shows: packages matching `query`, narrowed to `only`. */
+export interface ToolFilter {
+  query: string;
+  only: Only | null;
+}
+
+export class ToolFilters {
+  static readonly ALL: ToolFilter = { query: '', only: null };
+
+  /** Whether `pkg` matches: its name, program, or path holds the query. */
+  static keeps(pkg: ToolPackage, filter: ToolFilter): boolean {
+    const query = filter.query.trim().toLowerCase();
+    if (
+      query !== '' &&
+      ![pkg.id, pkg.program, pkg.system?.path ?? ''].some((text) =>
+        text.toLowerCase().includes(query),
+      )
+    ) {
+      return false;
+    }
+    switch (filter.only) {
+      case null:
+        return true;
+      case 'managed':
+      case 'system':
+      case 'missing':
+        return Supplies.tone(pkg) === filter.only;
+      case 'updates':
+        return Standings.of(pkg).kind === 'outdated';
+      default:
+        return assertNever(filter.only);
+    }
+  }
+}
+
 export class ToolGroups {
-  static of(listing: ToolListing): KindGroup[] {
+  static of(listing: ToolListing, filter: ToolFilter = ToolFilters.ALL): KindGroup[] {
     const known: Stored<Kind>[] = [...KINDS];
     const unknown = new Set<Stored<Kind>>();
     for (const p of listing.packages) {
@@ -491,7 +529,7 @@ export class ToolGroups {
       .map((kind) => ({
         kind,
         title: ToolGroups.title(kind),
-        packages: listing.packages.filter((p) => p.kind === kind),
+        packages: listing.packages.filter((p) => p.kind === kind && ToolFilters.keeps(p, filter)),
       }))
       .filter((group) => group.packages.length > 0);
   }
