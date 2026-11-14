@@ -114,6 +114,13 @@ impl Line {
         Self(bytes)
     }
 
+    /// One line of text, which must hold no newline of its own.
+    pub(crate) fn text(text: &str) -> Self {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.push(b'\n');
+        Self(bytes)
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }

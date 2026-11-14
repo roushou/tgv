@@ -7,7 +7,8 @@
 //! `match`. See docs/architecture.md.
 //!
 //! The primary type is [`Harness`]. Harnesses own their sign-in, token
-//! refresh, and retries; nothing here handles credentials.
+//! refresh, and retries; nothing here handles credentials. Ren can run a
+//! client's own sign-in commands (`sign_in`) and relay their link and code.
 
 pub mod attribution;
 pub mod claude_code;
@@ -22,6 +23,7 @@ pub mod models;
 pub mod opencode;
 pub mod pi;
 pub mod settings;
+pub mod sign_in;
 pub mod tools;
 
 /// A coding-agent harness Ren serves: the clients of AGENTS.md section 1. The
