@@ -255,6 +255,40 @@ export class Supplies {
     }
   }
 
+  /** The version runs use: `?` when the PATH's copy did not say. */
+  static version(supply: Supply): Version | '?' | null {
+    switch (supply.kind) {
+      case 'managed':
+        return supply.version;
+      case 'system':
+        return supply.system.version ?? '?';
+      case 'none':
+        return null;
+      default:
+        return assertNever(supply);
+    }
+  }
+
+  /**
+   * What runs use of `pkg` before and after `change`: an install or update
+   * gives them Ren's release; a removal leaves them the PATH's copy, if any.
+   */
+  static effect(pkg: ToolPackage, change: PlannedChange): Effect {
+    const after: Supply =
+      change.change === 'remove'
+        ? pkg.system === null
+          ? { kind: 'none' }
+          : { kind: 'system', system: pkg.system }
+        : { kind: 'managed', version: change.to ?? ('' as Version), shadows: pkg.system };
+    return {
+      change: change.change,
+      id: pkg.id,
+      from: Supplies.version(Supplies.of(pkg)),
+      to: Supplies.version(after),
+      toKind: after.kind,
+    };
+  }
+
   static tally(listing: ToolListing): Tally {
     const tally: Tally = { managed: 0, system: 0, missing: 0, updates: 0 };
     for (const pkg of listing.packages) {
@@ -305,6 +339,16 @@ export class RowActions {
         return assertNever(standing);
     }
   }
+}
+
+/** A staged change as runs see it: the version they use before and after. */
+export interface Effect {
+  change: ChangeKind;
+  id: PackageId;
+  from: Version | '?' | null;
+  to: Version | '?' | null;
+  /** Where runs get it after the change. */
+  toKind: Supply['kind'];
 }
 
 /** One row of a staged plan, as it will change the toolset. */
@@ -399,6 +443,15 @@ export class ToolPlan {
       }
     }
     return planned;
+  }
+
+  /** What applying this plan changes for runs, in listing order. */
+  effects(listing: ToolListing): Effect[] {
+    const byId = new Map(listing.packages.map((p) => [p.id, p]));
+    return this.changes(listing).flatMap((change) => {
+      const pkg = byId.get(change.id);
+      return pkg ? [Supplies.effect(pkg, change)] : [];
+    });
   }
 
   /** Only what still applies to `listing`, after it changed. */

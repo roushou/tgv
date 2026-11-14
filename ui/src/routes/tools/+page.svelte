@@ -118,6 +118,8 @@
   }
 
   const tally = $derived(listing ? Supplies.tally(listing) : null);
+  const effects = $derived(listing ? plan.effects(listing) : []);
+  const staged = $derived(new Map(effects.map((effect) => [effect.id, effect])));
   const short = (sha: string) => `${sha.slice(0, 12)}…`;
   const stateLabel = (state: GenerationView['state']) =>
     state === 'current' ? 'current' : state === 'in_use' ? 'in use' : state === 'idle' ? '' : state;
@@ -164,103 +166,118 @@
     </div>
   {:else if listing}
     <section class="tools-main" aria-label="Packages">
-      <table class="tools-table">
-        <colgroup>
-          <col class="c-name" />
-          <col class="c-version" />
-          <col />
-          <col class="c-action" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>Tool</th>
-            <th>Version</th>
-            <th>Source</th>
-            <th><span class="sr-only">Change</span></th>
-          </tr>
-        </thead>
-        {#each groups as group (group.kind)}
-          <tbody>
-            <tr class="tools-group">
-              <th colspan="4" scope="rowgroup">{group.title}</th>
-            </tr>
+      {#each groups as group (group.kind)}
+        <section class="group" aria-label={group.title}>
+          <h2>{group.title}</h2>
+          <div class="tiles">
             {#each group.packages as pkg (pkg.id)}
               {@const label = action(pkg)}
               {@const supply = Supplies.of(pkg)}
-              <tr
-                class="tools-row"
+              {@const change = staged.get(pkg.id)}
+              <div
+                class="tile {Supplies.tone(pkg)}"
                 class:selected={selected === pkg.id}
-                class:staged={plan.staged(pkg)}
+                class:staged={change !== undefined}
+                role="button"
+                tabindex="0"
                 onclick={() => (selected = pkg.id)}
+                onkeydown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') selected = pkg.id;
+                }}
               >
-                <td class="mono"
-                  >{@render dot(pkg)}{pkg.id}{#if pkg.origin === 'operator'}<span
+                <div class="line">
+                  <span class="name mono">{@render dot(pkg)}{pkg.id}</span>
+                  {#if pkg.origin === 'operator'}<span
                       class="chip tag"
                       title="Added in the daemon’s configuration">custom</span
                     >{:else if pkg.origin === null}<span
                       class="chip warning tag"
                       title="No longer in the daemon’s configuration">removed</span
-                    >{/if}</td
-                >
-                {#if supply.kind === 'managed'}
-                  <td class="mono">{supply.version}</td>
-                  <td
-                    ><span class="chip success">Ren</span>{#if supply.shadows}<span
-                        class="mono muted shadowed"
-                        title="Runs find Ren’s first">{supply.shadows.path}</span
-                      >{/if}</td
-                  >
-                {:else if supply.kind === 'system'}
-                  <td class="mono"
-                    >{#if supply.system.version}{supply.system.version}{:else}<span
-                        class="unknown"
-                        title={supply.system.unread ?? ''}>?</span
-                      >{/if}</td
-                  >
-                  <td
-                    ><span class="chip">system</span><span class="mono muted where"
-                      >{supply.system.path}</span
-                    ></td
-                  >
-                {:else}
-                  <td class="mono muted">—</td>
-                  <td
-                    >{#if pkg.needed_by.length > 0}<span class="chip error"
-                        >missing · {pkg.needed_by.map(harnessLabel).join(', ')}</span
-                      >{/if}</td
-                  >
-                {/if}
-                <td class="end">
+                    >{/if}
+                </div>
+                <div class="line">
+                  <span class="version mono">
+                    {#if change}
+                      <s class="muted">{change.from ?? '—'}</s><span class="arrow">→</span><span
+                        class="to {change.toKind}">{change.to ?? '—'}</span
+                      >
+                    {:else if supply.kind === 'managed'}{supply.version}
+                    {:else if supply.kind === 'system'}{#if supply.system.version}{supply.system
+                          .version}{:else}<span class="unknown" title={supply.system.unread ?? ''}
+                          >?</span
+                        >{/if}
+                    {:else}<span class="muted">—</span>{/if}
+                  </span>
                   {#if label && listing.platform}
                     <button
                       class="button small"
-                      class:chosen={plan.staged(pkg)}
+                      class:chosen={change !== undefined}
                       onclick={(event) => {
                         event.stopPropagation();
                         plan = plan.toggle(pkg);
                       }}>{label}</button
                     >
                   {/if}
-                </td>
-              </tr>
+                </div>
+                <div class="line source">
+                  {#if supply.kind === 'managed'}
+                    <span class="chip success">Ren</span>{#if supply.shadows}<span
+                        class="mono muted path shadowed"
+                        title="Runs find Ren’s first">{supply.shadows.path}</span
+                      >{/if}
+                  {:else if supply.kind === 'system'}
+                    <span class="chip">system</span><span
+                      class="mono muted path"
+                      title={supply.system.path}>{supply.system.path}</span
+                    >
+                  {:else if pkg.needed_by.length > 0}
+                    <span class="chip error"
+                      >missing · {pkg.needed_by.map(harnessLabel).join(', ')}</span
+                    >
+                  {/if}
+                </div>
+              </div>
             {/each}
-          </tbody>
-        {/each}
-      </table>
+          </div>
+        </section>
+      {/each}
+    </section>
+    <aside class="tools-inspector" aria-label="Details">
       {#if !plan.empty || applying.kind !== 'idle'}
-        <footer class="tools-plan" aria-live="polite">
-          {#if applying.kind === 'applying'}
-            <span class="muted">Installing…</span>
-          {:else if !plan.empty}
-            {#each changes as change (change.id)}
-              <span class="mono change {change.change}"
-                >{change.change === 'add' ? '+' : change.change === 'remove' ? '−' : '↑'}
-                {change.id}
-                {change.change === 'replace'
-                  ? `${change.from} → ${change.to}`
-                  : (change.to ?? change.from)}</span
+        <section class="changes" aria-live="polite">
+          <h3>
+            Changes
+            {#if applying.kind === 'done' || applying.kind === 'failed'}
+              <button
+                class="icon-button"
+                aria-label="Dismiss"
+                onclick={() => (applying = { kind: 'idle' })}
+                ><Icon name="close" size={12} /></button
               >
-            {/each}
+            {/if}
+          </h3>
+          {#if applying.kind === 'applying'}
+            <p class="muted">Installing…</p>
+          {:else if !plan.empty}
+            <ul class="change-list">
+              {#each effects as change (change.id)}
+                <li class={change.change}>
+                  <span class="sign"
+                    >{change.change === 'add' ? '+' : change.change === 'remove' ? '−' : '↑'}</span
+                  >
+                  <span class="mono">{change.id}</span>
+                  <span class="mono muted">{change.from ?? '—'}</span>
+                  <span class="mono muted">→</span>
+                  <span class="mono to {change.toKind}">{change.to ?? '—'}</span>
+                </li>
+              {/each}
+            </ul>
+            <div class="change-actions">
+              <button class="button" onclick={() => (plan = ToolPlan.EMPTY)}>Clear</button>
+              <button class="button primary" onclick={apply}
+                >Apply {changes.length} change{changes.length === 1 ? '' : 's'}</button
+              >
+            </div>
           {:else if applying.kind === 'done'}
             {#if applying.change.outcome === 'failed'}
               {#each applying.change.failures as failure (failure.package)}
@@ -276,21 +293,8 @@
           {:else if applying.kind === 'failed'}
             <span class="chip error">{applying.message}</span>
           {/if}
-          <span class="spacer"></span>
-          {#if !plan.empty && applying.kind !== 'applying'}
-            <button class="button" onclick={() => (plan = ToolPlan.EMPTY)}>Clear</button>
-            <button class="button primary" onclick={apply}>Apply</button>
-          {:else if applying.kind === 'done' || applying.kind === 'failed'}
-            <button
-              class="icon-button"
-              aria-label="Dismiss"
-              onclick={() => (applying = { kind: 'idle' })}><Icon name="close" size={12} /></button
-            >
-          {/if}
-        </footer>
+        </section>
       {/if}
-    </section>
-    <aside class="tools-inspector" aria-label="Details">
       {#if chosen}
         {@const supply = Supplies.of(chosen)}
         <section class="head">
@@ -406,75 +410,100 @@
   .tally .chip .dot {
     margin-right: 2px;
   }
-  .tools-table {
-    width: 100%;
-    border-collapse: collapse;
-    table-layout: fixed;
-    font-size: 12px;
+  .tools-main {
+    overflow: auto;
   }
-  .c-name {
-    width: 196px;
-  }
-  .c-version {
-    width: 104px;
-  }
-  .c-action {
-    width: 140px;
-  }
-  th,
-  td {
-    text-align: left;
-    padding: 7px 12px;
-    border-bottom: 1px solid var(--line);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  thead th {
-    font-weight: 500;
-    color: var(--muted);
-    background: var(--surface-subtle);
-  }
-  .tools-group th {
-    font-weight: 600;
-    font-size: 11px;
-    color: var(--muted);
-    background: var(--surface-subtle);
+  .group h2 {
+    margin: 0;
     padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    background: var(--surface-subtle);
+    border-bottom: 1px solid var(--line);
   }
-  .tools-row {
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    border-bottom: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .tile {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    padding: 8px 10px;
+    background: var(--surface);
     cursor: pointer;
+    font-size: 12px;
+    /* 1px rules between tiles; the last row's bottom rule is the grid's. */
+    box-shadow:
+      1px 0 0 var(--line),
+      0 1px 0 var(--line);
   }
-  .tools-row:hover {
+  .tile:hover {
     background: var(--row-hover);
   }
-  .tools-row.selected {
+  .tile.selected {
     background: var(--row-selected);
   }
-  .tools-row.staged td:first-child {
-    box-shadow: inset 2px 0 0 var(--accent);
+  .tile.staged {
+    box-shadow:
+      inset 2px 0 0 var(--accent),
+      1px 0 0 var(--line),
+      0 1px 0 var(--line);
   }
-  td.end {
-    text-align: right;
-    padding: 3px 12px;
+  .tile:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
-  .where,
-  .shadowed {
-    margin-left: 8px;
+  .line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    min-height: 24px;
   }
-  .shadowed {
-    text-decoration: line-through;
+  .name {
+    font-weight: 600;
   }
-  .tools-table td > .chip {
+  .version {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+  }
+  .version .arrow {
+    margin: 0 4px;
+    color: var(--muted);
+  }
+  .to.managed {
+    color: var(--success);
+  }
+  .to.none {
+    color: var(--error);
+  }
+  .source .chip {
     margin: 0;
     padding: 0 6px;
     font-size: 11px;
     line-height: 16px;
-    vertical-align: 1px;
   }
-  .tools-table td > .tag {
-    margin-left: 8px;
-    font-family: inherit;
+  .tag {
+    margin: 0;
+    padding: 0 6px;
+    font-size: 11px;
+    line-height: 16px;
+  }
+  .path {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  .shadowed {
+    text-decoration: line-through;
   }
   .unknown {
     color: var(--warning);
@@ -502,35 +531,41 @@
     background: transparent;
     box-shadow: inset 0 0 0 1.5px var(--error);
   }
-  .tools-plan {
-    margin-top: auto;
+  .changes h3 {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 10px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--line);
-    background: var(--surface-subtle);
-    position: sticky;
-    bottom: 0;
+    justify-content: space-between;
   }
-  .spacer {
-    flex: 1;
+  .change-list {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
   }
-  .change.add {
+  .change-list li {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto auto auto;
+    gap: 8px;
+    padding: 3px 0;
+  }
+  .change-list .sign {
+    font-weight: 700;
+  }
+  .change-list .add .sign {
     color: var(--success);
   }
-  .change.replace {
-    color: var(--live);
+  .change-list .replace .sign {
+    color: var(--accent);
   }
-  .change.remove {
+  .change-list .remove .sign {
     color: var(--error);
+  }
+  .change-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
   }
   .failed {
     color: var(--error);
-    display: inline-flex;
-    gap: 8px;
-    flex-wrap: wrap;
   }
   .tools-inspector {
     min-height: 0;

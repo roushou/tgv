@@ -281,3 +281,31 @@ test('each row stages one change, named with the version it brings', async () =>
     ],
   );
 });
+
+test('a staged change shows the version runs use before and after it', async () => {
+  const read = await listing();
+  const [claude, node, jq, fd] = read.packages;
+  assert.ok(claude && node && jq && fd);
+  const plan = ToolPlan.EMPTY.toggle(node).toggle(jq).toggle(fd);
+  assert.deepEqual(plan.effects(read), [
+    { change: 'replace', id: 'node', from: '24.1.0', to: '26.13.1', toKind: 'managed' },
+    // Removing Ren's jq leaves runs the PATH's, whose version was not read.
+    { change: 'remove', id: 'jq', from: '1.8.2', to: '?', toKind: 'system' },
+    { change: 'add', id: 'fd', from: null, to: '10.5.2', toKind: 'managed' },
+  ]);
+  // Installing over a PATH copy starts from the PATH's version.
+  const onPath = {
+    ...fd,
+    system: { path: '/usr/bin/fd', version: '9.0.0' as never, unread: null },
+  };
+  assert.deepEqual(
+    Supplies.effect(onPath, { change: 'add', id: fd.id, from: null, to: '10.5.2' as never }),
+    {
+      change: 'add',
+      id: 'fd',
+      from: '9.0.0',
+      to: '10.5.2',
+      toKind: 'managed',
+    },
+  );
+});
