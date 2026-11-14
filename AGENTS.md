@@ -431,15 +431,20 @@ dependencies under "Crates" below. Read the code for current module ownership.
   reads the daemon only through the management API and forwards only allowlisted
   read-only endpoints. It never forwards browser cookies or credentials, never reads
   storage directly, and never proxies inference. There are two exceptions.
-  Runs: with `REN_CONTROL_TOKEN_FILE` set, `/control/runs*`,
-  `/control/sessions*` (not the operator state's session blocks), and
-  `/control/history/*` (`src/lib/server/control.ts`, `RunsProxy`) forward the
-  Sessions view's same-origin JSON requests to the daemon's `/control/v1/runs*`,
-  `/control/v1/sessions*`, and its archive, unarchive, and delete routes only, with the control token read from that
+  Runs and tools: with `REN_CONTROL_TOKEN_FILE` set, `/control/runs*`,
+  `/control/sessions*` (not the operator state's session blocks),
+  `/control/history/*`, and `/control/tools*` (`src/lib/server/control.ts`,
+  `RunsProxy`) forward the Sessions and Tools views' same-origin JSON requests
+  to the daemon's `/control/v1/runs*`, `/control/v1/sessions*`, its archive,
+  unarchive, and delete routes, and `/control/v1/tools` (listing, change, and
+  collection) only, with the control token read from that
   file on each request, never sent to the browser, and, with
   `REN_CONTROL_LOGINS` set, only for those Tailscale logins; `src/lib/runs.ts`
   is the view's pure core (run states, the live transcript, the sessions by
   folder (`Sessions`), projects by place, and the clients a run can start with),
+  `src/lib/tools.ts` the Tools view's pure core (each package's
+  `Standing`, the `ToolPlan` staged before it is applied, and `ToolGroups`),
+  whose first read the UI server makes (`src/routes/tools/+page.server.ts`),
   `src/lib/mention.ts` the composer's offers (the client's commands after
   `/` or `$`, the folder's files after `@`), `src/lib/redline.ts` Redline's
   pure core (what a mark points at, the brief an agent gets, and the open

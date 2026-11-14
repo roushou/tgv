@@ -103,8 +103,9 @@ below says whether it is built. Record every deviation here, with its reason.
    generation's `bin` first on their `PATH` (`AgentHost::tools`,
    `RunTools`) and record it (`runs.toolset_generation`, migration 0011;
    `None` when the store was unreadable); `ren tools gc` keeps generations
-   runs without an end use (`Reader::live_toolsets`). Verified by unit and
-   store tests; not yet in a live run through the daemon.
+   runs without an end use (`Reader::live_toolsets`). Verified in the dev
+   slot: a fake codex run's process had the generation's `bin` first on its
+   `PATH`, and `/api/runs` recorded the generation.
 3. **Catalog sources.** Built. `crates/ren-depot/src/catalog.toml` pins
    node 26.13.1, bun 1.4.4, jq 1.8.2, fd 10.5.2, and ripgrep 15.2.0 for
    each platform; `Depot::builtin` reads it. Each was installed for real on
@@ -115,10 +116,14 @@ below says whether it is built. Record every deviation here, with its reason.
    daemon's `HostToolbox`, which `ren tools list|install|remove|gc` uses too,
    so both print the same JSON. Not built: rollback to an older generation,
    and `which`.
-5. **Tools view.** Not built. One flush table grouped by kind (wanted,
-   locked, source, used by, status), changes staged in a plan bar and
-   applied as a new generation, and an inspector with provenance,
-   generations, rollback, and the runs that used each. Verified in the dev
-   slot before it is installed.
+5. **Tools view.** Built (`/tools`): one flush table grouped by kind
+   (standing, Ren's release, the install, what `PATH` has, with each row's
+   one change), changes staged in a plan bar and applied as one generation,
+   and an inspector with the release, its digest and folder, what `PATH`
+   has, the clients that need it, and the generations kept with
+   "Remove unused". Verified in the dev slot (install, removal, collection
+   keeping a live run's generation, and a run's agent getting the
+   generation's `bin` first on its `PATH`). Not built: rollback, and the
+   runs that used each generation.
 6. **Ren's own packages and project requirements.** Not built. `Build`
    sources, and requirements a project declares.

@@ -112,6 +112,11 @@ test('starting, listing, projects, models, answering, history edits, and the fee
   await proxy.respond(post(`/control/sessions/${run}/delete`, {}));
   await proxy.respond(post(`/control/history/sessions/${run}/archive`, {}));
   await proxy.respond(post(`/control/history/runs/${run}/delete`, {}));
+  await proxy.respond(
+    new Request('http://ui.test/control/tools', { headers: { 'sec-fetch-site': 'same-origin' } }),
+  );
+  await proxy.respond(post('/control/tools/change', { add: ['jq'] }));
+  await proxy.respond(post('/control/tools/gc', {}));
   const feed = await proxy.respond(new Request('http://ui.test/control/runs/events'));
   assert.equal(await feed.text(), ': connected\n\nevent: run\ndata: {}\n\n');
   assert.deepEqual(seen, [
@@ -127,6 +132,9 @@ test('starting, listing, projects, models, answering, history edits, and the fee
     `POST /control/v1/sessions/${run}/delete`,
     `POST /control/v1/history/sessions/${run}/archive`,
     `POST /control/v1/history/runs/${run}/delete`,
+    'GET /control/v1/tools',
+    'POST /control/v1/tools/change',
+    'POST /control/v1/tools/gc',
     'GET /control/v1/runs/events',
   ]);
 });
@@ -211,6 +219,8 @@ test('cross-site, non-JSON, unknown, and unlisted requests never reach the daemo
     [new Request('http://ui.test/control/runs/clients/hermes/models'), 404],
     [new Request(`http://ui.test/control/history/runs/${run}/delete`), 405],
     [post('/control/pause', {}), 404],
+    [post('/control/tools/install', {}), 404],
+    [new Request('http://ui.test/control/tools/change'), 405],
     [new Request(`http://ui.test/control/sessions/${run}/stop`), 405],
     [post(`/control/sessions/${run}/prompt`, { text: 'x'.repeat(300 * 1024) }), 413],
   ];

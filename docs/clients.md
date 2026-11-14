@@ -147,6 +147,12 @@ later change makes a new generation for later runs, and `gc` keeps every
 generation a run without an end still uses (as the database records it).
 With nothing installed, runs get the daemon's `PATH` unchanged.
 
+The web UI's Tools view shows the same on the daemon's host: each package's
+standing, release, install, and what `PATH` has, the generations kept, and
+which clients need what. Installs, updates, and removals are staged and then
+applied as one generation; it needs the UI server's `REN_CONTROL_TOKEN_FILE`,
+as Sessions does. Over the control API it is [`/control/v1/tools`](api.md#tools).
+
 ## Native endpoints
 
 | Client endpoint                            | Upstream path                          |
